@@ -222,7 +222,7 @@ export default function ProvidersPage() {
                   <code className="text-[10px]">{p.api_key_preview}</code>
                 </DataTableCell>
                 <DataTableCell>
-                  <Badge variant={p.is_active ? "default" : "destructive"}>
+                  <Badge variant={p.is_active ? "success" : "destructive"}>
                     {p.is_active ? "Active" : "Inactive"}
                   </Badge>
                 </DataTableCell>

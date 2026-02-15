@@ -11,6 +11,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { PageHeader } from "@/components/page-header";
+import { JsonView } from "@/components/json-view";
 import {
   DataTable,
   DataTableHeader,
@@ -177,7 +178,7 @@ export default function LogsPage() {
                 </DataTableCell>
                 <DataTableCell>
                   <Badge
-                    variant={log.is_error ? "destructive" : "default"}
+                    variant={log.is_error ? "destructive" : "success"}
                   >
                     {log.status_code}
                   </Badge>
@@ -286,7 +287,7 @@ export default function LogsPage() {
                   <span className="text-muted-foreground">Status:</span>{" "}
                   <Badge
                     variant={
-                      selectedLog.is_error ? "destructive" : "default"
+                      selectedLog.is_error ? "destructive" : "success"
                     }
                   >
                     {selectedLog.status_code}
@@ -332,18 +333,14 @@ export default function LogsPage() {
               {selectedLog.request_body != null && (
                 <div>
                   <div className="mb-1 font-medium">Request Body</div>
-                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 font-mono text-[10px]">
-                    {JSON.stringify(selectedLog.request_body, null, 2)}
-                  </pre>
+                  <JsonView data={selectedLog.request_body} />
                 </div>
               )}
 
               {selectedLog.response_body != null && (
                 <div>
                   <div className="mb-1 font-medium">Response Body</div>
-                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 font-mono text-[10px]">
-                    {JSON.stringify(selectedLog.response_body, null, 2)}
-                  </pre>
+                  <JsonView data={selectedLog.response_body} />
                 </div>
               )}
             </CardContent>

@@ -271,7 +271,7 @@ export default function KeysPage() {
                   <code className="text-[10px]">{k.key_prefix}</code>
                 </DataTableCell>
                 <DataTableCell>
-                  <Badge variant={k.is_active ? "default" : "destructive"}>
+                  <Badge variant={k.is_active ? "success" : "destructive"}>
                     {k.is_active ? "Active" : "Revoked"}
                   </Badge>
                 </DataTableCell>

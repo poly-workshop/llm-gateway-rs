@@ -216,7 +216,7 @@ export default function ModelsPage() {
                   </code>
                 </DataTableCell>
                 <DataTableCell>
-                  <Badge variant={m.is_active ? "default" : "destructive"}>
+                  <Badge variant={m.is_active ? "success" : "destructive"}>
                     {m.is_active ? "Active" : "Inactive"}
                   </Badge>
                 </DataTableCell>

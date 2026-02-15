@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAdminKey } from "@/lib/admin-key-context";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { useState } from "react";
 
 const navItems = [
@@ -41,6 +42,10 @@ export function Sidebar() {
           </Link>
         ))}
       </nav>
+
+      <div className="space-y-2 border-t p-3">
+        <ThemeToggle />
+      </div>
 
       <div className="border-t p-3">
         <label className="mb-1.5 block text-xs text-muted-foreground">
