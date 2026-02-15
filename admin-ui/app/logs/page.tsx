@@ -30,7 +30,7 @@ export default function LogsPage() {
   const [logs, setLogs] = useState<RequestLogInfo[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [perPage] = useState(25);
+  const [perPage] = useState(10);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
