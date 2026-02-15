@@ -7,6 +7,7 @@ import type {
   UserKeyInfo,
   UserKeyCreated,
   CreateKeyRequest,
+  UpdateKeyRequest,
   LogListResponse,
   ListLogsParams,
 } from "./types";
@@ -116,6 +117,16 @@ export async function rotateKey(id: string): Promise<UserKeyCreated> {
 
 export async function deleteKey(id: string): Promise<void> {
   return request<void>(`/admin/keys/${id}`, { method: "DELETE" });
+}
+
+export async function updateKey(
+  id: string,
+  data: UpdateKeyRequest
+): Promise<UserKeyInfo> {
+  return request<UserKeyInfo>(`/admin/keys/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
 }
 
 // ── Request Logs ─────────────────────────────────────────────

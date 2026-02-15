@@ -35,6 +35,7 @@ fn key_prefix(plain: &str) -> String {
 /// Returns the full key info plus the plaintext key (shown only once).
 pub async fn create_key(
     name: &str,
+    token_budget: Option<i64>,
     db: &PgPool,
     redis: &mut ConnectionManager,
 ) -> Result<UserKeyCreated, AppError> {
@@ -46,14 +47,15 @@ pub async fn create_key(
 
     sqlx::query(
         r#"
-        INSERT INTO user_keys (id, name, key_hash, key_prefix, is_active, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, TRUE, $5, $5)
+        INSERT INTO user_keys (id, name, key_hash, key_prefix, is_active, token_budget, tokens_used, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, TRUE, $5, 0, $6, $6)
         "#,
     )
     .bind(id)
     .bind(name)
     .bind(&hash)
     .bind(&prefix)
+    .bind(token_budget)
     .bind(now)
     .execute(db)
     .await?;
@@ -70,41 +72,59 @@ pub async fn create_key(
     })
 }
 
+/// Result of a successful key validation.
+pub struct KeyValidation {
+    pub key_id: Uuid,
+    pub key_hash: String,
+    pub token_budget: Option<i64>,
+    pub tokens_used: i64,
+}
+
 /// Validate a plaintext key against Redis (fast path) or PG (slow path + backfill).
-/// Returns `Some((key_id, key_hash))` on success, `None` on invalid key.
+/// Returns `Some(KeyValidation)` on success, `None` on invalid key.
 pub async fn validate_key(
     plain: &str,
     redis: &mut ConnectionManager,
     db: &PgPool,
-) -> Result<Option<(Uuid, String)>, AppError> {
+) -> Result<Option<KeyValidation>, AppError> {
     let hash = hash_key(plain);
 
     // Fast path: check Redis SET
     let exists: bool = redis.sismember(REDIS_ACTIVE_KEYS_SET, &hash).await?;
     if exists {
-        // Look up key ID from PG (lightweight query, cached by PG)
-        let key_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM user_keys WHERE key_hash = $1 AND is_active = TRUE",
+        // Look up key details from PG
+        let row = sqlx::query_as::<_, (Uuid, Option<i64>, i64)>(
+            "SELECT id, token_budget, tokens_used FROM user_keys WHERE key_hash = $1 AND is_active = TRUE",
         )
         .bind(&hash)
         .fetch_optional(db)
         .await?;
 
-        return Ok(key_id.map(|id| (id, hash)));
+        return Ok(row.map(|(id, budget, used)| KeyValidation {
+            key_id: id,
+            key_hash: hash,
+            token_budget: budget,
+            tokens_used: used,
+        }));
     }
 
     // Slow path: check PG
-    let key_id = sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM user_keys WHERE key_hash = $1 AND is_active = TRUE",
+    let row = sqlx::query_as::<_, (Uuid, Option<i64>, i64)>(
+        "SELECT id, token_budget, tokens_used FROM user_keys WHERE key_hash = $1 AND is_active = TRUE",
     )
     .bind(&hash)
     .fetch_optional(db)
     .await?;
 
-    if let Some(id) = key_id {
+    if let Some((id, budget, used)) = row {
         // Backfill Redis
         let _: () = redis.sadd(REDIS_ACTIVE_KEYS_SET, &hash).await?;
-        return Ok(Some((id, hash)));
+        return Ok(Some(KeyValidation {
+            key_id: id,
+            key_hash: hash,
+            token_budget: budget,
+            tokens_used: used,
+        }));
     }
 
     Ok(None)
@@ -217,5 +237,49 @@ pub async fn warm_up_redis(
         tracing::info!("No active keys to warm up in Redis");
     }
 
+    Ok(())
+}
+
+/// Update token budget and optionally reset usage for a key.
+pub async fn update_key_budget(
+    id: Uuid,
+    token_budget: Option<i64>,
+    reset_usage: bool,
+    db: &PgPool,
+) -> Result<UserKeyInfo, AppError> {
+    let key = if reset_usage {
+        sqlx::query_as::<_, UserKey>(
+            "UPDATE user_keys SET token_budget = $1, tokens_used = 0, updated_at = NOW() WHERE id = $2 RETURNING *",
+        )
+        .bind(token_budget)
+        .bind(id)
+        .fetch_optional(db)
+        .await?
+    } else {
+        sqlx::query_as::<_, UserKey>(
+            "UPDATE user_keys SET token_budget = $1, updated_at = NOW() WHERE id = $2 RETURNING *",
+        )
+        .bind(token_budget)
+        .bind(id)
+        .fetch_optional(db)
+        .await?
+    };
+
+    key.map(UserKeyInfo::from).ok_or(AppError::NotFound)
+}
+
+/// Atomically increment tokens_used for a key.
+pub async fn increment_tokens_used(
+    id: Uuid,
+    tokens: i64,
+    db: &PgPool,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE user_keys SET tokens_used = tokens_used + $1, updated_at = NOW() WHERE id = $2",
+    )
+    .bind(tokens)
+    .bind(id)
+    .execute(db)
+    .await?;
     Ok(())
 }

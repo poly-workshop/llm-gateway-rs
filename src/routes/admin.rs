@@ -18,6 +18,16 @@ use crate::state::AppState;
 #[derive(Debug, Deserialize)]
 pub struct CreateKeyRequest {
     pub name: String,
+    pub token_budget: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateKeyRequest {
+    /// Token budget. null = unlimited.
+    pub token_budget: Option<i64>,
+    /// If true, reset tokens_used to 0.
+    #[serde(default)]
+    pub reset_usage: bool,
 }
 
 /// POST /admin/keys — create a new user key
@@ -30,7 +40,7 @@ async fn create_key(
     }
 
     let mut redis = state.redis.clone();
-    let result = key_service::create_key(&body.name, &state.db, &mut redis).await?;
+    let result = key_service::create_key(&body.name, body.token_budget, &state.db, &mut redis).await?;
 
     Ok((StatusCode::CREATED, Json(result)))
 }
@@ -61,6 +71,22 @@ async fn delete_key_handler(
     let mut redis = state.redis.clone();
     key_service::delete_key(id, &state.db, &mut redis).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// PUT /admin/keys/:id — update key budget / reset usage
+async fn update_key_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateKeyRequest>,
+) -> Result<Json<crate::models::user_key::UserKeyInfo>, AppError> {
+    let result = key_service::update_key_budget(
+        id,
+        body.token_budget,
+        body.reset_usage,
+        &state.db,
+    )
+    .await?;
+    Ok(Json(result))
 }
 
 // ── Provider endpoints ────────────────────────────────────────────────
@@ -235,7 +261,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         // User keys
         .route("/keys", post(create_key).get(list_keys))
-        .route("/keys/{id}", delete(delete_key_handler))
+        .route("/keys/{id}", delete(delete_key_handler).put(update_key_handler))
         .route("/keys/{id}/rotate", post(rotate_key))
         // Providers
         .route("/providers", post(create_provider).get(list_providers))

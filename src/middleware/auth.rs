@@ -17,6 +17,8 @@ use crate::state::AppState;
 pub struct KeyIdentity {
     pub key_id: Uuid,
     pub key_hash: String,
+    pub token_budget: Option<i64>,
+    pub tokens_used: i64,
 }
 
 /// Extract a Bearer token from the Authorization header.
@@ -75,9 +77,14 @@ pub async fn user_key_auth(
 
     let mut redis = state.redis.clone();
     match key_service::validate_key(&token, &mut redis, &state.db).await {
-        Ok(Some((key_id, key_hash))) => {
+        Ok(Some(v)) => {
             let mut req = req;
-            req.extensions_mut().insert(KeyIdentity { key_id, key_hash });
+            req.extensions_mut().insert(KeyIdentity {
+                key_id: v.key_id,
+                key_hash: v.key_hash,
+                token_budget: v.token_budget,
+                tokens_used: v.tokens_used,
+            });
             next.run(req).await
         }
         Ok(None) => (

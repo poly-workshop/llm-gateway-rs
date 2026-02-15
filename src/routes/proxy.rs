@@ -12,7 +12,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::middleware::auth::KeyIdentity;
-use crate::services::{log_service, model_service};
+use crate::services::{key_service, log_service, model_service};
 use crate::state::AppState;
 
 type ByteChunk = Vec<u8>;
@@ -52,6 +52,24 @@ async fn chat_completions(
         .get("stream")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+
+    // Check token budget before proxying
+    if let Some(budget) = key_identity.token_budget {
+        if key_identity.tokens_used >= budget {
+            return Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                axum::Json(serde_json::json!({
+                    "error": {
+                        "message": format!(
+                            "Token budget exhausted: {}/{} tokens used",
+                            key_identity.tokens_used, budget
+                        )
+                    }
+                })),
+            )
+                .into_response());
+        }
+    }
 
     // Resolve model → provider routing
     let mut redis = state.redis.clone();
@@ -223,6 +241,17 @@ async fn chat_completions(
                 {
                     tracing::error!("Failed to insert request log: {}", e);
                 }
+
+                // Increment token usage
+                if let Some(tokens) = total_tokens {
+                    if tokens > 0 {
+                        if let Err(e) = key_service::increment_tokens_used(
+                            log_key_identity.key_id, tokens as i64, &db,
+                        ).await {
+                            tracing::error!("Failed to increment token usage: {}", e);
+                        }
+                    }
+                }
             });
 
             Ok(response)
@@ -274,6 +303,7 @@ async fn chat_completions(
                 {
                     tracing::error!("Failed to insert request log: {}", e);
                 }
+                // No usage data available without response body logging
             });
 
             Ok(response)
@@ -330,6 +360,7 @@ async fn chat_completions(
         // Async log insert
         let db = state.db.clone();
         let latency_ms = start.elapsed().as_millis() as i32;
+        let log_key_id = key_identity.key_id;
         tokio::spawn(async move {
             if let Err(e) = log_service::insert_log(
                 &db,
@@ -356,6 +387,17 @@ async fn chat_completions(
             .await
             {
                 tracing::error!("Failed to insert request log: {}", e);
+            }
+
+            // Increment token usage
+            if let Some(tokens) = total_tokens {
+                if tokens > 0 {
+                    if let Err(e) = key_service::increment_tokens_used(
+                        log_key_id, tokens as i64, &db,
+                    ).await {
+                        tracing::error!("Failed to increment token usage: {}", e);
+                    }
+                }
             }
         });
 

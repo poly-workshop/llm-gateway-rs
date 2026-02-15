@@ -48,6 +48,8 @@ export interface UserKeyInfo {
   name: string;
   key_prefix: string;
   is_active: boolean;
+  token_budget: number | null;
+  tokens_used: number;
   created_at: string;
   updated_at: string;
 }
@@ -62,6 +64,12 @@ export interface UserKeyCreated {
 
 export interface CreateKeyRequest {
   name: string;
+  token_budget?: number | null;
+}
+
+export interface UpdateKeyRequest {
+  token_budget?: number | null;
+  reset_usage?: boolean;
 }
 
 export interface ApiError {

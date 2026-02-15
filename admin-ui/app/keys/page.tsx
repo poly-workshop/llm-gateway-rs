@@ -19,6 +19,12 @@ import { useAdminKey } from "@/lib/admin-key-context";
 import * as api from "@/lib/api";
 import type { UserKeyInfo } from "@/lib/types";
 
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
 export default function KeysPage() {
   const { isConfigured } = useAdminKey();
   const [keys, setKeys] = useState<UserKeyInfo[]>([]);
@@ -28,11 +34,16 @@ export default function KeysPage() {
   // Create form
   const [showCreate, setShowCreate] = useState(false);
   const [createName, setCreateName] = useState("");
+  const [createBudget, setCreateBudget] = useState("");
   const [creating, setCreating] = useState(false);
 
   // Newly created/rotated key (shown once)
   const [newKey, setNewKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Edit budget
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editBudget, setEditBudget] = useState("");
 
   const fetchKeys = useCallback(async () => {
     if (!isConfigured) return;
@@ -57,10 +68,15 @@ export default function KeysPage() {
     setCreating(true);
     setError("");
     try {
-      const result = await api.createKey({ name: createName });
+      const budgetNum = createBudget.trim() ? parseInt(createBudget, 10) : null;
+      const result = await api.createKey({
+        name: createName,
+        token_budget: budgetNum && !isNaN(budgetNum) ? budgetNum : null,
+      });
       setNewKey(result.key);
       setCopied(false);
       setCreateName("");
+      setCreateBudget("");
       setShowCreate(false);
       fetchKeys();
     } catch (e: unknown) {
@@ -92,6 +108,33 @@ export default function KeysPage() {
     }
   };
 
+  const handleUpdateBudget = async (id: string) => {
+    try {
+      const budgetNum = editBudget.trim() ? parseInt(editBudget, 10) : null;
+      await api.updateKey(id, {
+        token_budget: budgetNum && !isNaN(budgetNum) ? budgetNum : null,
+      });
+      setEditingId(null);
+      setEditBudget("");
+      fetchKeys();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to update budget");
+    }
+  };
+
+  const handleResetUsage = async (id: string, k: UserKeyInfo) => {
+    if (!confirm(`Reset token usage for "${k.name}" to 0?`)) return;
+    try {
+      await api.updateKey(id, {
+        token_budget: k.token_budget,
+        reset_usage: true,
+      });
+      fetchKeys();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to reset usage");
+    }
+  };
+
   const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -100,6 +143,11 @@ export default function KeysPage() {
     } catch {
       // fallback
     }
+  };
+
+  const startEditBudget = (k: UserKeyInfo) => {
+    setEditingId(k.id);
+    setEditBudget(k.token_budget != null ? String(k.token_budget) : "");
   };
 
   if (!isConfigured) {
@@ -179,6 +227,18 @@ export default function KeysPage() {
                   required
                 />
               </div>
+              <div className="w-48">
+                <label className="mb-1 block text-xs text-muted-foreground">
+                  Token Budget (optional)
+                </label>
+                <Input
+                  type="number"
+                  placeholder="Unlimited"
+                  value={createBudget}
+                  onChange={(e) => setCreateBudget(e.target.value)}
+                  min={0}
+                />
+              </div>
               <Button type="submit" size="sm" disabled={creating}>
                 {creating ? "Creating..." : "Generate Key"}
               </Button>
@@ -192,8 +252,8 @@ export default function KeysPage() {
           <DataTableHead>Name</DataTableHead>
           <DataTableHead>Key Prefix</DataTableHead>
           <DataTableHead>Status</DataTableHead>
+          <DataTableHead>Token Usage</DataTableHead>
           <DataTableHead>Created</DataTableHead>
-          <DataTableHead>Updated</DataTableHead>
           <DataTableHead className="text-right">Actions</DataTableHead>
         </DataTableHeader>
         <DataTableBody>
@@ -216,17 +276,85 @@ export default function KeysPage() {
                   </Badge>
                 </DataTableCell>
                 <DataTableCell>
+                  {editingId === k.id ? (
+                    <div className="flex items-center gap-1">
+                      <Input
+                        type="number"
+                        className="h-7 w-28 text-xs"
+                        placeholder="Unlimited"
+                        value={editBudget}
+                        onChange={(e) => setEditBudget(e.target.value)}
+                        min={0}
+                        autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleUpdateBudget(k.id);
+                          if (e.key === "Escape") setEditingId(null);
+                        }}
+                      />
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={() => handleUpdateBudget(k.id)}
+                      >
+                        Save
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => setEditingId(null)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs tabular-nums">
+                        {formatTokens(k.tokens_used)}
+                        {k.token_budget != null && (
+                          <span className="text-muted-foreground">
+                            {" / "}
+                            {formatTokens(k.token_budget)}
+                          </span>
+                        )}
+                        {k.token_budget == null && (
+                          <span className="text-muted-foreground"> / ∞</span>
+                        )}
+                      </span>
+                      {k.token_budget != null &&
+                        k.tokens_used >= k.token_budget && (
+                          <Badge variant="destructive" className="text-[10px] px-1 py-0">
+                            Exhausted
+                          </Badge>
+                        )}
+                      {k.is_active && (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          className="h-5 px-1 text-[10px]"
+                          onClick={() => startEditBudget(k)}
+                        >
+                          Edit
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </DataTableCell>
+                <DataTableCell>
                   <span className="text-muted-foreground">
                     {new Date(k.created_at).toLocaleDateString()}
                   </span>
                 </DataTableCell>
-                <DataTableCell>
-                  <span className="text-muted-foreground">
-                    {new Date(k.updated_at).toLocaleDateString()}
-                  </span>
-                </DataTableCell>
                 <DataTableCell className="text-right">
                   <div className="flex items-center justify-end gap-1">
+                    {k.is_active && k.tokens_used > 0 && (
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={() => handleResetUsage(k.id, k)}
+                      >
+                        Reset Usage
+                      </Button>
+                    )}
                     {k.is_active && (
                       <Button
                         variant="outline"
