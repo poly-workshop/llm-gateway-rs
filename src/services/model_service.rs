@@ -1,0 +1,258 @@
+use chrono::Utc;
+use redis::aio::ConnectionManager;
+use redis::AsyncCommands;
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use crate::error::AppError;
+use crate::models::model::{Model, ModelInfo, ModelRoute};
+use crate::models::provider::Provider;
+
+const REDIS_MODEL_ROUTES_HASH: &str = "gateway:model_routes";
+
+/// Create a new model mapping.
+pub async fn create_model(
+    name: &str,
+    provider_id: Uuid,
+    provider_model_name: Option<&str>,
+    db: &PgPool,
+    redis: &mut ConnectionManager,
+) -> Result<ModelInfo, AppError> {
+    // Verify provider exists
+    let provider = sqlx::query_as::<_, Provider>("SELECT * FROM providers WHERE id = $1")
+        .bind(provider_id)
+        .fetch_optional(db)
+        .await?
+        .ok_or_else(|| AppError::BadRequest(format!("Provider {provider_id} not found")))?;
+
+    let id = Uuid::new_v4();
+    let now = Utc::now();
+
+    sqlx::query(
+        r#"
+        INSERT INTO models (id, name, provider_id, provider_model_name, is_active, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, TRUE, $5, $5)
+        "#,
+    )
+    .bind(id)
+    .bind(name)
+    .bind(provider_id)
+    .bind(provider_model_name)
+    .bind(now)
+    .execute(db)
+    .await?;
+
+    // Update Redis cache
+    cache_model_route(name, provider_model_name, &provider, redis).await?;
+
+    Ok(ModelInfo {
+        id,
+        name: name.to_string(),
+        provider_id,
+        provider_name: Some(provider.name),
+        provider_model_name: provider_model_name.map(|s| s.to_string()),
+        is_active: true,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+/// List all models with their provider names.
+pub async fn list_models(db: &PgPool) -> Result<Vec<ModelInfo>, AppError> {
+    let rows = sqlx::query_as::<_, ModelWithProvider>(
+        r#"
+        SELECT m.id, m.name, m.provider_id, m.provider_model_name, m.is_active,
+               m.created_at, m.updated_at, p.name AS provider_name
+        FROM models m
+        JOIN providers p ON m.provider_id = p.id
+        ORDER BY m.created_at DESC
+        "#,
+    )
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| ModelInfo {
+            id: r.id,
+            name: r.name,
+            provider_id: r.provider_id,
+            provider_name: Some(r.provider_name),
+            provider_model_name: r.provider_model_name,
+            is_active: r.is_active,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        })
+        .collect())
+}
+
+/// Delete a model and remove from Redis cache.
+pub async fn delete_model(
+    id: Uuid,
+    db: &PgPool,
+    redis: &mut ConnectionManager,
+) -> Result<(), AppError> {
+    let model = sqlx::query_as::<_, Model>("SELECT * FROM models WHERE id = $1")
+        .bind(id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    sqlx::query("DELETE FROM models WHERE id = $1")
+        .bind(id)
+        .execute(db)
+        .await?;
+
+    // Remove from Redis
+    let _: () = redis.hdel(REDIS_MODEL_ROUTES_HASH, &model.name).await?;
+
+    Ok(())
+}
+
+/// Resolve a user-facing model name to its routing information.
+/// Fast path: Redis hash lookup. Slow path: PG query + backfill Redis.
+pub async fn resolve_model_route(
+    model_name: &str,
+    redis: &mut ConnectionManager,
+    db: &PgPool,
+) -> Result<Option<ModelRoute>, AppError> {
+    // Fast path: check Redis
+    let cached: Option<String> = redis.hget(REDIS_MODEL_ROUTES_HASH, model_name).await?;
+    if let Some(json_str) = cached {
+        if let Ok(route) = serde_json::from_str::<ModelRoute>(&json_str) {
+            return Ok(Some(route));
+        }
+    }
+
+    // Slow path: query PG
+    let row = sqlx::query_as::<_, ModelWithProviderFull>(
+        r#"
+        SELECT m.name AS model_name, m.provider_model_name, m.provider_id,
+               p.base_url, p.api_key, p.kind AS provider_kind
+        FROM models m
+        JOIN providers p ON m.provider_id = p.id
+        WHERE m.name = $1 AND m.is_active = TRUE AND p.is_active = TRUE
+        "#,
+    )
+    .bind(model_name)
+    .fetch_optional(db)
+    .await?;
+
+    match row {
+        Some(r) => {
+            let route = ModelRoute {
+                provider_id: r.provider_id,
+                provider_model_name: r
+                    .provider_model_name
+                    .unwrap_or_else(|| r.model_name.clone()),
+                base_url: r.base_url,
+                api_key: r.api_key,
+                provider_kind: r.provider_kind,
+            };
+
+            // Backfill Redis
+            if let Ok(json_str) = serde_json::to_string(&route) {
+                let _: Result<(), _> = redis
+                    .hset(REDIS_MODEL_ROUTES_HASH, model_name, &json_str)
+                    .await;
+            }
+
+            Ok(Some(route))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Warm up Redis with all active model routes (call on startup).
+pub async fn warm_up_model_routes(
+    db: &PgPool,
+    redis: &mut ConnectionManager,
+) -> Result<(), AppError> {
+    let rows = sqlx::query_as::<_, ModelWithProviderFull>(
+        r#"
+        SELECT m.name AS model_name, m.provider_model_name, m.provider_id,
+               p.base_url, p.api_key, p.kind AS provider_kind
+        FROM models m
+        JOIN providers p ON m.provider_id = p.id
+        WHERE m.is_active = TRUE AND p.is_active = TRUE
+        "#,
+    )
+    .fetch_all(db)
+    .await?;
+
+    // Clear stale cache
+    let _: () = redis::cmd("DEL")
+        .arg(REDIS_MODEL_ROUTES_HASH)
+        .query_async(redis)
+        .await?;
+
+    for r in &rows {
+        let route = ModelRoute {
+            provider_id: r.provider_id,
+            provider_model_name: r
+                .provider_model_name
+                .clone()
+                .unwrap_or_else(|| r.model_name.clone()),
+            base_url: r.base_url.clone(),
+            api_key: r.api_key.clone(),
+            provider_kind: r.provider_kind.clone(),
+        };
+
+        if let Ok(json_str) = serde_json::to_string(&route) {
+            let _: Result<(), _> = redis
+                .hset(REDIS_MODEL_ROUTES_HASH, &r.model_name, &json_str)
+                .await;
+        }
+    }
+
+    tracing::info!("Warmed up Redis with {} model routes", rows.len());
+    Ok(())
+}
+
+// ── Internal query types ──────────────────────────────────────────────
+
+#[derive(Debug, sqlx::FromRow)]
+struct ModelWithProvider {
+    id: Uuid,
+    name: String,
+    provider_id: Uuid,
+    provider_model_name: Option<String>,
+    is_active: bool,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    provider_name: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ModelWithProviderFull {
+    model_name: String,
+    provider_model_name: Option<String>,
+    provider_id: Uuid,
+    base_url: String,
+    api_key: String,
+    provider_kind: String,
+}
+
+/// Cache a single model route into Redis.
+async fn cache_model_route(
+    model_name: &str,
+    provider_model_name: Option<&str>,
+    provider: &Provider,
+    redis: &mut ConnectionManager,
+) -> Result<(), AppError> {
+    let route = ModelRoute {
+        provider_id: provider.id,
+        provider_model_name: provider_model_name
+            .unwrap_or(model_name)
+            .to_string(),
+        base_url: provider.base_url.clone(),
+        api_key: provider.api_key.clone(),
+        provider_kind: provider.kind.clone(),
+    };
+
+    let json_str = serde_json::to_string(&route)
+        .map_err(|e| AppError::Internal(format!("JSON serialization error: {e}")))?;
+
+    let _: () = redis.hset(REDIS_MODEL_ROUTES_HASH, model_name, &json_str).await?;
+    Ok(())
+}
