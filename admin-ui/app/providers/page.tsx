@@ -23,6 +23,7 @@ const PROVIDER_KINDS = [
   { value: "openai", label: "OpenAI", url: "https://api.openai.com/v1" },
   { value: "openrouter", label: "OpenRouter", url: "https://openrouter.ai/api/v1" },
   { value: "dashscope", label: "DashScope", url: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+  { value: "ark", label: "Ark", url: "https://ark.cn-beijing.volces.com/api/v3" },
 ];
 
 export default function ProvidersPage() {

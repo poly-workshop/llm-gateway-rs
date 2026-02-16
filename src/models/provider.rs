@@ -11,6 +11,7 @@ pub enum ProviderKind {
     OpenAI,
     OpenRouter,
     DashScope,
+    Ark,
 }
 
 impl ProviderKind {
@@ -19,6 +20,7 @@ impl ProviderKind {
             ProviderKind::OpenAI => "openai",
             ProviderKind::OpenRouter => "openrouter",
             ProviderKind::DashScope => "dashscope",
+            ProviderKind::Ark => "ark",
         }
     }
 
@@ -27,6 +29,7 @@ impl ProviderKind {
             "openai" => Some(ProviderKind::OpenAI),
             "openrouter" => Some(ProviderKind::OpenRouter),
             "dashscope" => Some(ProviderKind::DashScope),
+            "ark" => Some(ProviderKind::Ark),
             _ => None,
         }
     }
@@ -37,6 +40,7 @@ impl ProviderKind {
             ProviderKind::OpenAI => "https://api.openai.com/v1",
             ProviderKind::OpenRouter => "https://openrouter.ai/api/v1",
             ProviderKind::DashScope => "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            ProviderKind::Ark => "https://ark.cn-beijing.volces.com/api/v3",
         }
     }
 }

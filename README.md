@@ -2,11 +2,11 @@
 
 A lightweight, multi-provider LLM API gateway built with Rust and Axum.
 
-Routes OpenAI-compatible `/v1/chat/completions` requests to multiple upstream providers (OpenAI, OpenRouter, DashScope) based on the requested model name. Manages user-facing API keys with generation, rotation, and revocation.
+Routes OpenAI-compatible `/v1/chat/completions` requests to multiple upstream providers (OpenAI, OpenRouter, DashScope, Ark) based on the requested model name. Manages user-facing API keys with generation, rotation, and revocation.
 
 ## Features
 
-- **Multi-provider support** — OpenAI, OpenRouter, DashScope (any OpenAI-compatible API)
+- **Multi-provider support** — OpenAI, OpenRouter, DashScope, Ark (any OpenAI-compatible API)
 - **Model routing** — Map user-facing model names to specific providers with optional name rewriting
 - **User Key management** — Generate `sk-{uuid}` keys, rotate (old key instantly invalidated), soft-delete
 - **Streaming** — Full SSE streaming passthrough for `stream: true` requests
@@ -16,7 +16,7 @@ Routes OpenAI-compatible `/v1/chat/completions` requests to multiple upstream pr
 ## Architecture
 
 ```text
-Client ──► Gateway (/v1/chat/completions) ──► Provider (OpenAI / OpenRouter / DashScope)
+Client ──► Gateway (/v1/chat/completions) ──► Provider (OpenAI / OpenRouter / DashScope / Ark)
               │
               ├─ User Key auth (Redis SET → PG fallback)
               ├─ Model resolution (Redis HASH → PG fallback)
@@ -118,6 +118,16 @@ curl -X POST http://localhost:8080/admin/providers \
     "api_key": "sk-your-dashscope-key"
   }'
 
+# Register an Ark provider
+curl -X POST http://localhost:8080/admin/providers \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "ark-main",
+    "kind": "ark",
+    "api_key": "your-ark-key"
+  }'
+
 # List all providers
 curl http://localhost:8080/admin/providers \
   -H "Authorization: Bearer $ADMIN_KEY"
@@ -140,6 +150,7 @@ Supported `kind` values and their default `base_url`:
 | `openai` | `https://api.openai.com/v1` |
 | `openrouter` | `https://openrouter.ai/api/v1` |
 | `dashscope` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| `ark` | `https://ark.cn-beijing.volces.com/api/v3` |
 
 You can override `base_url` when creating a provider.
 

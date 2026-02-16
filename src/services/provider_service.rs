@@ -14,7 +14,7 @@ pub async fn create_provider(
     db: &PgPool,
 ) -> Result<ProviderInfo, AppError> {
     let pk = ProviderKind::from_str(kind)
-        .ok_or_else(|| AppError::BadRequest(format!("Unknown provider kind: {kind}. Supported: openai, openrouter, dashscope")))?;
+        .ok_or_else(|| AppError::BadRequest(format!("Unknown provider kind: {kind}. Supported: openai, openrouter, dashscope, ark")))?;
 
     let resolved_base_url = base_url.unwrap_or_else(|| pk.default_base_url());
     let id = Uuid::new_v4();

@@ -94,7 +94,7 @@ async fn update_key_handler(
 #[derive(Debug, Deserialize)]
 pub struct CreateProviderRequest {
     pub name: String,
-    /// "openai" | "openrouter" | "dashscope"
+    /// "openai" | "openrouter" | "dashscope" | "ark"
     pub kind: String,
     /// Optional; defaults based on kind
     pub base_url: Option<String>,
