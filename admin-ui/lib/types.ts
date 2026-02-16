@@ -106,6 +106,7 @@ export interface RequestLogInfo {
   prompt_tokens: number | null;
   completion_tokens: number | null;
   total_tokens: number | null;
+  weighted_total_tokens: number | null;
   latency_ms: number;
   is_stream: boolean;
   request_body: unknown | null;

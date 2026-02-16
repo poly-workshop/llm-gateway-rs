@@ -190,9 +190,11 @@ export default function LogsPage() {
                 </DataTableCell>
                 <DataTableCell>
                   {log.total_tokens != null ? (
-                    <span className="text-xs tabular-nums">
-                      {log.prompt_tokens ?? 0} / {log.completion_tokens ?? 0} ={" "}
-                      {log.total_tokens}
+                    <span className="text-xs tabular-nums" title={`Prompt: ${log.prompt_tokens ?? 0}, Completion: ${log.completion_tokens ?? 0}, Raw total: ${log.total_tokens}`}>
+                      <span className="font-medium">{log.weighted_total_tokens ?? log.total_tokens}</span>
+                      <span className="ml-1 text-[10px] text-muted-foreground">
+                        ({log.prompt_tokens ?? 0}↑ {log.completion_tokens ?? 0}↓)
+                      </span>
                     </span>
                   ) : (
                     <span className="text-xs text-muted-foreground">—</span>
@@ -302,9 +304,22 @@ export default function LogsPage() {
                   {selectedLog.latency_ms}ms
                 </div>
                 <div>
-                  <span className="text-muted-foreground">Tokens:</span>{" "}
+                  <span className="text-muted-foreground">Tokens (weighted):</span>{" "}
                   {selectedLog.total_tokens != null
-                    ? `${selectedLog.prompt_tokens ?? 0} / ${selectedLog.completion_tokens ?? 0} = ${selectedLog.total_tokens}`
+                    ? (selectedLog.weighted_total_tokens ?? selectedLog.total_tokens)
+                    : "—"}
+                  {selectedLog.weighted_total_tokens != null &&
+                    selectedLog.total_tokens != null &&
+                    selectedLog.weighted_total_tokens !== selectedLog.total_tokens && (
+                      <span className="ml-1 text-[10px] text-muted-foreground">
+                        (raw: {selectedLog.total_tokens})
+                      </span>
+                    )}
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Prompt / Completion:</span>{" "}
+                  {selectedLog.total_tokens != null
+                    ? `${selectedLog.prompt_tokens ?? 0} / ${selectedLog.completion_tokens ?? 0}`
                     : "—"}
                 </div>
                 <div>

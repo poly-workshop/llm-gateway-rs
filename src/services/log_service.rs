@@ -3,7 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::models::request_log::{LogListResponse, RequestLog, RequestLogInfo};
+use crate::models::request_log::{LogListResponse, RequestLogInfo};
 
 /// Parameters for inserting a new log entry (built by the proxy).
 pub struct NewRequestLog {
@@ -77,6 +77,60 @@ pub struct ListLogsParams {
     pub model: Option<String>,
 }
 
+/// Row struct for the joined log + model coefficients query.
+#[derive(Debug, sqlx::FromRow)]
+#[allow(dead_code)]
+struct RequestLogRow {
+    // request_logs columns
+    id: uuid::Uuid,
+    request_id: Option<String>,
+    user_key_id: Option<uuid::Uuid>,
+    user_key_hash: String,
+    model_requested: String,
+    model_sent: String,
+    provider_id: Option<uuid::Uuid>,
+    provider_kind: Option<String>,
+    status_code: i16,
+    is_error: bool,
+    prompt_tokens: Option<i32>,
+    completion_tokens: Option<i32>,
+    total_tokens: Option<i32>,
+    latency_ms: i32,
+    is_stream: bool,
+    request_body: Option<serde_json::Value>,
+    response_body: Option<serde_json::Value>,
+    error_message: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    // computed
+    weighted_total_tokens: Option<i64>,
+}
+
+impl From<RequestLogRow> for RequestLogInfo {
+    fn from(r: RequestLogRow) -> Self {
+        Self {
+            id: r.id,
+            request_id: r.request_id,
+            user_key_id: r.user_key_id,
+            model_requested: r.model_requested,
+            model_sent: r.model_sent,
+            provider_id: r.provider_id,
+            provider_kind: r.provider_kind,
+            status_code: r.status_code,
+            is_error: r.is_error,
+            prompt_tokens: r.prompt_tokens,
+            completion_tokens: r.completion_tokens,
+            total_tokens: r.total_tokens,
+            weighted_total_tokens: r.weighted_total_tokens,
+            latency_ms: r.latency_ms,
+            is_stream: r.is_stream,
+            request_body: r.request_body,
+            response_body: r.response_body,
+            error_message: r.error_message,
+            created_at: r.created_at,
+        }
+    }
+}
+
 /// List logs with offset-based pagination and optional filters.
 pub async fn list_logs(db: &PgPool, params: ListLogsParams) -> Result<LogListResponse, AppError> {
     let offset = (params.page - 1).max(0) * params.per_page;
@@ -84,11 +138,11 @@ pub async fn list_logs(db: &PgPool, params: ListLogsParams) -> Result<LogListRes
     // Build dynamic WHERE clauses
     let mut conditions: Vec<String> = vec![];
     if params.key_id.is_some() {
-        conditions.push("user_key_id = $3".to_string());
+        conditions.push("r.user_key_id = $3".to_string());
     }
     if params.model.is_some() {
         let idx = if params.key_id.is_some() { 4 } else { 3 };
-        conditions.push(format!("model_requested = ${idx}"));
+        conditions.push(format!("r.model_requested = ${idx}"));
     }
 
     let where_clause = if conditions.is_empty() {
@@ -97,9 +151,25 @@ pub async fn list_logs(db: &PgPool, params: ListLogsParams) -> Result<LogListRes
         format!("WHERE {}", conditions.join(" AND "))
     };
 
-    let count_query = format!("SELECT COUNT(*) FROM request_logs {where_clause}");
+    let count_query = format!("SELECT COUNT(*) FROM request_logs r {where_clause}");
     let data_query = format!(
-        "SELECT * FROM request_logs {where_clause} ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+        r#"SELECT r.id, r.request_id, r.user_key_id, r.user_key_hash,
+                  r.model_requested, r.model_sent, r.provider_id, r.provider_kind,
+                  r.status_code, r.is_error, r.prompt_tokens, r.completion_tokens, r.total_tokens,
+                  r.latency_ms, r.is_stream, r.request_body, r.response_body, r.error_message,
+                  r.created_at,
+                  CASE WHEN r.prompt_tokens IS NOT NULL OR r.completion_tokens IS NOT NULL
+                       THEN ROUND(
+                           COALESCE(r.prompt_tokens, 0) * COALESCE(m.input_token_coefficient, 1.0)
+                           + COALESCE(r.completion_tokens, 0) * COALESCE(m.output_token_coefficient, 1.0)
+                       )::BIGINT
+                       ELSE NULL
+                  END AS weighted_total_tokens
+           FROM request_logs r
+           LEFT JOIN models m ON m.name = r.model_requested
+           {where_clause}
+           ORDER BY r.created_at DESC
+           LIMIT $1 OFFSET $2"#
     );
 
     // Execute count query
@@ -115,8 +185,8 @@ pub async fn list_logs(db: &PgPool, params: ListLogsParams) -> Result<LogListRes
     };
 
     // Execute data query
-    let logs: Vec<RequestLog> = {
-        let mut q = sqlx::query_as::<_, RequestLog>(&data_query)
+    let rows: Vec<RequestLogRow> = {
+        let mut q = sqlx::query_as::<_, RequestLogRow>(&data_query)
             .bind(params.per_page)
             .bind(offset);
         if let Some(ref kid) = params.key_id {
@@ -129,7 +199,7 @@ pub async fn list_logs(db: &PgPool, params: ListLogsParams) -> Result<LogListRes
     };
 
     Ok(LogListResponse {
-        data: logs.into_iter().map(RequestLogInfo::from).collect(),
+        data: rows.into_iter().map(RequestLogInfo::from).collect(),
         total,
         page: params.page,
         per_page: params.per_page,

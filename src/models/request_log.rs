@@ -43,6 +43,8 @@ pub struct RequestLogInfo {
     pub prompt_tokens: Option<i32>,
     pub completion_tokens: Option<i32>,
     pub total_tokens: Option<i32>,
+    /// Token usage weighted by model input/output coefficients.
+    pub weighted_total_tokens: Option<i64>,
     pub latency_ms: i32,
     pub is_stream: bool,
     pub request_body: Option<serde_json::Value>,
@@ -66,6 +68,7 @@ impl From<RequestLog> for RequestLogInfo {
             prompt_tokens: r.prompt_tokens,
             completion_tokens: r.completion_tokens,
             total_tokens: r.total_tokens,
+            weighted_total_tokens: None,
             latency_ms: r.latency_ms,
             is_stream: r.is_stream,
             request_body: r.request_body,
