@@ -33,6 +33,8 @@ export interface ModelInfo {
   provider_name: string | null;
   provider_model_name: string | null;
   is_active: boolean;
+  input_token_coefficient: number;
+  output_token_coefficient: number;
   created_at: string;
   updated_at: string;
 }
@@ -41,6 +43,8 @@ export interface CreateModelRequest {
   name: string;
   provider_id: string;
   provider_model_name?: string;
+  input_token_coefficient?: number;
+  output_token_coefficient?: number;
 }
 
 export interface UserKeyInfo {

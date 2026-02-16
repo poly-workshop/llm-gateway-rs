@@ -11,6 +11,8 @@ pub struct Model {
     pub provider_id: Uuid,
     pub provider_model_name: Option<String>,
     pub is_active: bool,
+    pub input_token_coefficient: f64,
+    pub output_token_coefficient: f64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -24,6 +26,8 @@ pub struct ModelInfo {
     pub provider_name: Option<String>,
     pub provider_model_name: Option<String>,
     pub is_active: bool,
+    pub input_token_coefficient: f64,
+    pub output_token_coefficient: f64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -41,4 +45,8 @@ pub struct ModelRoute {
     pub api_key: String,
     /// Provider kind for any provider-specific behavior
     pub provider_kind: String,
+    /// Input (prompt) token cost coefficient (default 1.0)
+    pub input_token_coefficient: f64,
+    /// Output (completion) token cost coefficient (default 1.0)
+    pub output_token_coefficient: f64,
 }

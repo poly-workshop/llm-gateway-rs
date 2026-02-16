@@ -202,6 +202,8 @@ async fn chat_completions(
         let log_model_sent = model_sent.clone();
         let log_provider_id = route.provider_id;
         let log_provider_kind = route.provider_kind.clone();
+        let log_input_coeff = route.input_token_coefficient;
+        let log_output_coeff = route.output_token_coefficient;
         let log_key_identity = key_identity.clone();
         let log_request_id = request_id.clone();
         let log_status = status.as_u16() as i16;
@@ -250,11 +252,14 @@ async fn chat_completions(
                 tracing::error!("Failed to insert request log: {}", e);
             }
 
-            // Increment token usage
-            if let Some(tokens) = total_tokens {
-                if tokens > 0 {
+            // Increment token usage (weighted by model coefficients)
+            {
+                let pt = prompt_tokens.unwrap_or(0) as f64;
+                let ct = completion_tokens.unwrap_or(0) as f64;
+                let weighted = (pt * log_input_coeff + ct * log_output_coeff).round() as i64;
+                if weighted > 0 {
                     if let Err(e) = key_service::increment_tokens_used(
-                        log_key_identity.key_id, tokens as i64, &db,
+                        log_key_identity.key_id, weighted, &db,
                     ).await {
                         tracing::error!("Failed to increment token usage: {}", e);
                     }
@@ -344,11 +349,14 @@ async fn chat_completions(
                 tracing::error!("Failed to insert request log: {}", e);
             }
 
-            // Increment token usage
-            if let Some(tokens) = total_tokens {
-                if tokens > 0 {
+            // Increment token usage (weighted by model coefficients)
+            {
+                let pt = prompt_tokens.unwrap_or(0) as f64;
+                let ct = completion_tokens.unwrap_or(0) as f64;
+                let weighted = (pt * route.input_token_coefficient + ct * route.output_token_coefficient).round() as i64;
+                if weighted > 0 {
                     if let Err(e) = key_service::increment_tokens_used(
-                        log_key_id, tokens as i64, &db,
+                        log_key_id, weighted, &db,
                     ).await {
                         tracing::error!("Failed to increment token usage: {}", e);
                     }

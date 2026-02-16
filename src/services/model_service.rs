@@ -15,6 +15,8 @@ pub async fn create_model(
     name: &str,
     provider_id: Uuid,
     provider_model_name: Option<&str>,
+    input_token_coefficient: f64,
+    output_token_coefficient: f64,
     db: &PgPool,
     redis: &mut ConnectionManager,
 ) -> Result<ModelInfo, AppError> {
@@ -30,20 +32,23 @@ pub async fn create_model(
 
     sqlx::query(
         r#"
-        INSERT INTO models (id, name, provider_id, provider_model_name, is_active, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, TRUE, $5, $5)
+        INSERT INTO models (id, name, provider_id, provider_model_name, is_active,
+                            input_token_coefficient, output_token_coefficient, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $7)
         "#,
     )
     .bind(id)
     .bind(name)
     .bind(provider_id)
     .bind(provider_model_name)
+    .bind(input_token_coefficient)
+    .bind(output_token_coefficient)
     .bind(now)
     .execute(db)
     .await?;
 
     // Update Redis cache
-    cache_model_route(name, provider_model_name, &provider, redis).await?;
+    cache_model_route(name, provider_model_name, input_token_coefficient, output_token_coefficient, &provider, redis).await?;
 
     Ok(ModelInfo {
         id,
@@ -52,6 +57,8 @@ pub async fn create_model(
         provider_name: Some(provider.name),
         provider_model_name: provider_model_name.map(|s| s.to_string()),
         is_active: true,
+        input_token_coefficient,
+        output_token_coefficient,
         created_at: now,
         updated_at: now,
     })
@@ -62,6 +69,7 @@ pub async fn list_models(db: &PgPool) -> Result<Vec<ModelInfo>, AppError> {
     let rows = sqlx::query_as::<_, ModelWithProvider>(
         r#"
         SELECT m.id, m.name, m.provider_id, m.provider_model_name, m.is_active,
+               m.input_token_coefficient, m.output_token_coefficient,
                m.created_at, m.updated_at, p.name AS provider_name
         FROM models m
         JOIN providers p ON m.provider_id = p.id
@@ -80,6 +88,8 @@ pub async fn list_models(db: &PgPool) -> Result<Vec<ModelInfo>, AppError> {
             provider_name: Some(r.provider_name),
             provider_model_name: r.provider_model_name,
             is_active: r.is_active,
+            input_token_coefficient: r.input_token_coefficient,
+            output_token_coefficient: r.output_token_coefficient,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -128,6 +138,7 @@ pub async fn resolve_model_route(
     let row = sqlx::query_as::<_, ModelWithProviderFull>(
         r#"
         SELECT m.name AS model_name, m.provider_model_name, m.provider_id,
+               m.input_token_coefficient, m.output_token_coefficient,
                p.base_url, p.api_key, p.kind AS provider_kind
         FROM models m
         JOIN providers p ON m.provider_id = p.id
@@ -148,6 +159,8 @@ pub async fn resolve_model_route(
                 base_url: r.base_url,
                 api_key: r.api_key,
                 provider_kind: r.provider_kind,
+                input_token_coefficient: r.input_token_coefficient,
+                output_token_coefficient: r.output_token_coefficient,
             };
 
             // Backfill Redis
@@ -171,6 +184,7 @@ pub async fn warm_up_model_routes(
     let rows = sqlx::query_as::<_, ModelWithProviderFull>(
         r#"
         SELECT m.name AS model_name, m.provider_model_name, m.provider_id,
+               m.input_token_coefficient, m.output_token_coefficient,
                p.base_url, p.api_key, p.kind AS provider_kind
         FROM models m
         JOIN providers p ON m.provider_id = p.id
@@ -196,6 +210,8 @@ pub async fn warm_up_model_routes(
             base_url: r.base_url.clone(),
             api_key: r.api_key.clone(),
             provider_kind: r.provider_kind.clone(),
+            input_token_coefficient: r.input_token_coefficient,
+            output_token_coefficient: r.output_token_coefficient,
         };
 
         if let Ok(json_str) = serde_json::to_string(&route) {
@@ -218,6 +234,8 @@ struct ModelWithProvider {
     provider_id: Uuid,
     provider_model_name: Option<String>,
     is_active: bool,
+    input_token_coefficient: f64,
+    output_token_coefficient: f64,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     provider_name: String,
@@ -228,6 +246,8 @@ struct ModelWithProviderFull {
     model_name: String,
     provider_model_name: Option<String>,
     provider_id: Uuid,
+    input_token_coefficient: f64,
+    output_token_coefficient: f64,
     base_url: String,
     api_key: String,
     provider_kind: String,
@@ -237,6 +257,8 @@ struct ModelWithProviderFull {
 async fn cache_model_route(
     model_name: &str,
     provider_model_name: Option<&str>,
+    input_token_coefficient: f64,
+    output_token_coefficient: f64,
     provider: &Provider,
     redis: &mut ConnectionManager,
 ) -> Result<(), AppError> {
@@ -248,6 +270,8 @@ async fn cache_model_route(
         base_url: provider.base_url.clone(),
         api_key: provider.api_key.clone(),
         provider_kind: provider.kind.clone(),
+        input_token_coefficient,
+        output_token_coefficient,
     };
 
     let json_str = serde_json::to_string(&route)

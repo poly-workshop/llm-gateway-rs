@@ -187,6 +187,10 @@ pub struct CreateModelRequest {
     pub provider_id: Uuid,
     /// Optional: actual model name on the provider side (defaults to `name`)
     pub provider_model_name: Option<String>,
+    /// Token budget coefficient for prompt tokens (default 1.0)
+    pub input_token_coefficient: Option<f64>,
+    /// Token budget coefficient for completion tokens (default 1.0)
+    pub output_token_coefficient: Option<f64>,
 }
 
 /// POST /admin/models
@@ -203,6 +207,8 @@ async fn create_model(
         &body.name,
         body.provider_id,
         body.provider_model_name.as_deref(),
+        body.input_token_coefficient.unwrap_or(1.0),
+        body.output_token_coefficient.unwrap_or(1.0),
         &state.db,
         &mut redis,
     )

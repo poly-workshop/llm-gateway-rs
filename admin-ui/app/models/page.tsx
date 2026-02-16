@@ -31,6 +31,8 @@ export default function ModelsPage() {
   const [createName, setCreateName] = useState("");
   const [createProviderId, setCreateProviderId] = useState("");
   const [createProviderModelName, setCreateProviderModelName] = useState("");
+  const [createInputCoeff, setCreateInputCoeff] = useState("1");
+  const [createOutputCoeff, setCreateOutputCoeff] = useState("1");
   const [creating, setCreating] = useState(false);
 
   const fetchData = useCallback(async () => {
@@ -67,9 +69,13 @@ export default function ModelsPage() {
         name: createName,
         provider_id: createProviderId,
         provider_model_name: createProviderModelName || undefined,
+        input_token_coefficient: parseFloat(createInputCoeff) || 1,
+        output_token_coefficient: parseFloat(createOutputCoeff) || 1,
       });
       setCreateName("");
       setCreateProviderModelName("");
+      setCreateInputCoeff("1");
+      setCreateOutputCoeff("1");
       setShowCreate(false);
       fetchData();
     } catch (e: unknown) {
@@ -174,6 +180,38 @@ export default function ModelsPage() {
                     Actual model identifier sent to the provider. Leave empty if same as model name.
                   </p>
                 </div>
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">
+                    Input Token Coefficient
+                  </label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="1.0"
+                    value={createInputCoeff}
+                    onChange={(e) => setCreateInputCoeff(e.target.value)}
+                  />
+                  <p className="mt-0.5 text-[10px] text-muted-foreground/60">
+                    Multiplier for prompt tokens when charging budget
+                  </p>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">
+                    Output Token Coefficient
+                  </label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="1.0"
+                    value={createOutputCoeff}
+                    onChange={(e) => setCreateOutputCoeff(e.target.value)}
+                  />
+                  <p className="mt-0.5 text-[10px] text-muted-foreground/60">
+                    Multiplier for completion tokens when charging budget
+                  </p>
+                </div>
                 <div className="col-span-2 flex justify-end">
                   <Button type="submit" size="sm" disabled={creating}>
                     {creating ? "Creating..." : "Create Model"}
@@ -190,6 +228,8 @@ export default function ModelsPage() {
           <DataTableHead>Model Name</DataTableHead>
           <DataTableHead>Provider</DataTableHead>
           <DataTableHead>Provider Model Name</DataTableHead>
+          <DataTableHead>Input Coeff</DataTableHead>
+          <DataTableHead>Output Coeff</DataTableHead>
           <DataTableHead>Status</DataTableHead>
           <DataTableHead>Created</DataTableHead>
           <DataTableHead className="text-right">Actions</DataTableHead>
@@ -214,6 +254,12 @@ export default function ModelsPage() {
                   <code className="text-[10px] text-muted-foreground">
                     {m.provider_model_name || "—"}
                   </code>
+                </DataTableCell>
+                <DataTableCell>
+                  <code className="text-xs">{m.input_token_coefficient}</code>
+                </DataTableCell>
+                <DataTableCell>
+                  <code className="text-xs">{m.output_token_coefficient}</code>
                 </DataTableCell>
                 <DataTableCell>
                   <Badge variant={m.is_active ? "success" : "destructive"}>
