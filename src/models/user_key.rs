@@ -25,6 +25,8 @@ pub struct UserKeyInfo {
     pub is_active: bool,
     pub token_budget: Option<i64>,
     pub tokens_used: i64,
+    /// Token usage calculated from request logs with model coefficients applied.
+    pub weighted_tokens_used: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -38,6 +40,7 @@ impl From<UserKey> for UserKeyInfo {
             is_active: k.is_active,
             token_budget: k.token_budget,
             tokens_used: k.tokens_used,
+            weighted_tokens_used: k.tokens_used, // default: same as raw
             created_at: k.created_at,
             updated_at: k.updated_at,
         }
