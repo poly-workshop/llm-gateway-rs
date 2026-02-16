@@ -47,6 +47,15 @@ export interface CreateModelRequest {
   output_token_coefficient?: number;
 }
 
+export interface UpdateModelRequest {
+  name?: string;
+  provider_id?: string;
+  provider_model_name?: string | null;
+  is_active?: boolean;
+  input_token_coefficient?: number;
+  output_token_coefficient?: number;
+}
+
 export interface UserKeyInfo {
   id: string;
   name: string;

@@ -4,6 +4,7 @@ import type {
   UpdateProviderRequest,
   ModelInfo,
   CreateModelRequest,
+  UpdateModelRequest,
   UserKeyInfo,
   UserKeyCreated,
   CreateKeyRequest,
@@ -92,6 +93,16 @@ export async function createModel(
 
 export async function deleteModel(id: string): Promise<void> {
   return request<void>(`/admin/models/${id}`, { method: "DELETE" });
+}
+
+export async function updateModel(
+  id: string,
+  data: UpdateModelRequest
+): Promise<ModelInfo> {
+  return request<ModelInfo>(`/admin/models/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
 }
 
 // ── User Keys ────────────────────────────────────────────────

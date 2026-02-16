@@ -17,7 +17,7 @@ import {
 } from "@/components/data-table";
 import { useAdminKey } from "@/lib/admin-key-context";
 import * as api from "@/lib/api";
-import type { ModelInfo, ProviderInfo } from "@/lib/types";
+import type { ModelInfo, ProviderInfo, UpdateModelRequest } from "@/lib/types";
 
 export default function ModelsPage() {
   const { isConfigured } = useAdminKey();
@@ -34,6 +34,16 @@ export default function ModelsPage() {
   const [createInputCoeff, setCreateInputCoeff] = useState("1");
   const [createOutputCoeff, setCreateOutputCoeff] = useState("1");
   const [creating, setCreating] = useState(false);
+
+  // Edit state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editProviderId, setEditProviderId] = useState("");
+  const [editProviderModelName, setEditProviderModelName] = useState("");
+  const [editInputCoeff, setEditInputCoeff] = useState("");
+  const [editOutputCoeff, setEditOutputCoeff] = useState("");
+  const [editIsActive, setEditIsActive] = useState(true);
+  const [saving, setSaving] = useState(false);
 
   const fetchData = useCallback(async () => {
     if (!isConfigured) return;
@@ -92,6 +102,41 @@ export default function ModelsPage() {
       fetchData();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to delete model");
+    }
+  };
+
+  const startEdit = (m: ModelInfo) => {
+    setEditingId(m.id);
+    setEditName(m.name);
+    setEditProviderId(m.provider_id);
+    setEditProviderModelName(m.provider_model_name || "");
+    setEditInputCoeff(String(m.input_token_coefficient));
+    setEditOutputCoeff(String(m.output_token_coefficient));
+    setEditIsActive(m.is_active);
+  };
+
+  const cancelEdit = () => setEditingId(null);
+
+  const handleSaveEdit = async () => {
+    if (!editingId) return;
+    setSaving(true);
+    setError("");
+    try {
+      const data: UpdateModelRequest = {
+        name: editName || undefined,
+        provider_id: editProviderId || undefined,
+        provider_model_name: editProviderModelName || null,
+        is_active: editIsActive,
+        input_token_coefficient: parseFloat(editInputCoeff) || 1,
+        output_token_coefficient: parseFloat(editOutputCoeff) || 1,
+      };
+      await api.updateModel(editingId, data);
+      setEditingId(null);
+      fetchData();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to update model");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -241,6 +286,81 @@ export default function ModelsPage() {
             <DataTableEmpty message="No models configured yet." />
           ) : (
             models.map((m) => (
+              editingId === m.id ? (
+                <DataTableRow key={m.id}>
+                  <DataTableCell>
+                    <Input
+                      className="h-7 text-xs"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                    />
+                  </DataTableCell>
+                  <DataTableCell>
+                    <select
+                      className="h-7 w-full border border-input bg-transparent px-1.5 text-xs outline-none focus-visible:border-ring"
+                      value={editProviderId}
+                      onChange={(e) => setEditProviderId(e.target.value)}
+                    >
+                      {providers.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({p.kind})
+                        </option>
+                      ))}
+                    </select>
+                  </DataTableCell>
+                  <DataTableCell>
+                    <Input
+                      className="h-7 text-xs"
+                      placeholder="(same as model name)"
+                      value={editProviderModelName}
+                      onChange={(e) => setEditProviderModelName(e.target.value)}
+                    />
+                  </DataTableCell>
+                  <DataTableCell>
+                    <Input
+                      className="h-7 w-16 text-xs"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={editInputCoeff}
+                      onChange={(e) => setEditInputCoeff(e.target.value)}
+                    />
+                  </DataTableCell>
+                  <DataTableCell>
+                    <Input
+                      className="h-7 w-16 text-xs"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={editOutputCoeff}
+                      onChange={(e) => setEditOutputCoeff(e.target.value)}
+                    />
+                  </DataTableCell>
+                  <DataTableCell>
+                    <select
+                      className="h-7 border border-input bg-transparent px-1.5 text-xs outline-none focus-visible:border-ring"
+                      value={editIsActive ? "active" : "inactive"}
+                      onChange={(e) => setEditIsActive(e.target.value === "active")}
+                    >
+                      <option value="active">Active</option>
+                      <option value="inactive">Inactive</option>
+                    </select>
+                  </DataTableCell>
+                  <DataTableCell>
+                    <span className="text-muted-foreground">
+                      {new Date(m.created_at).toLocaleDateString()}
+                    </span>
+                  </DataTableCell>
+                  <DataTableCell className="text-right space-x-1">
+                    <Button size="xs" disabled={saving} onClick={handleSaveEdit}>
+                      {saving ? "Saving..." : "Save"}
+                    </Button>
+                    <Button variant="outline" size="xs" onClick={cancelEdit}>
+                      Cancel
+                    </Button>
+                  </DataTableCell>
+                </DataTableRow>
+              ) : (
               <DataTableRow key={m.id}>
                 <DataTableCell>
                   <code className="font-medium">{m.name}</code>
@@ -271,7 +391,14 @@ export default function ModelsPage() {
                     {new Date(m.created_at).toLocaleDateString()}
                   </span>
                 </DataTableCell>
-                <DataTableCell className="text-right">
+                <DataTableCell className="text-right space-x-1">
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    onClick={() => startEdit(m)}
+                  >
+                    Edit
+                  </Button>
                   <Button
                     variant="destructive"
                     size="xs"
@@ -281,6 +408,7 @@ export default function ModelsPage() {
                   </Button>
                 </DataTableCell>
               </DataTableRow>
+              )
             ))
           )}
         </DataTableBody>

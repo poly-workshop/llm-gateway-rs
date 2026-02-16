@@ -235,6 +235,40 @@ async fn delete_model_handler(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateModelRequest {
+    pub name: Option<String>,
+    pub provider_id: Option<Uuid>,
+    /// Use `null` to reset to default (= model name). Omit the field to keep current value.
+    pub provider_model_name: Option<Option<String>>,
+    pub is_active: Option<bool>,
+    pub input_token_coefficient: Option<f64>,
+    pub output_token_coefficient: Option<f64>,
+}
+
+/// PUT /admin/models/:id
+async fn update_model_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateModelRequest>,
+) -> Result<Json<crate::models::model::ModelInfo>, AppError> {
+    let mut redis = state.redis.clone();
+    let result = model_service::update_model(
+        id,
+        body.name.as_deref(),
+        body.provider_id,
+        body.provider_model_name.as_ref().map(|o| o.as_deref()),
+        body.is_active,
+        body.input_token_coefficient,
+        body.output_token_coefficient,
+        &state.db,
+        &mut redis,
+    )
+    .await?;
+
+    Ok(Json(result))
+}
+
 // ── Router ────────────────────────────────────────────────────────────
 
 // ── Request Log endpoints ─────────────────────────────────────────────
@@ -274,7 +308,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/providers/{id}", delete(delete_provider_handler).put(update_provider))
         // Models
         .route("/models", post(create_model).get(list_models))
-        .route("/models/{id}", delete(delete_model_handler))
+        .route("/models/{id}", delete(delete_model_handler).put(update_model_handler))
         // Logs
         .route("/logs", get(list_logs))
 }
