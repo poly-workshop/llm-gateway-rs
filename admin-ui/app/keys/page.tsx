@@ -252,7 +252,7 @@ export default function KeysPage() {
           <DataTableHead>Name</DataTableHead>
           <DataTableHead>Key Prefix</DataTableHead>
           <DataTableHead>Status</DataTableHead>
-          <DataTableHead>Token Usage (Weighted)</DataTableHead>
+          <DataTableHead>Token Usage</DataTableHead>
           <DataTableHead>Created</DataTableHead>
           <DataTableHead className="text-right">Actions</DataTableHead>
         </DataTableHeader>
@@ -309,7 +309,7 @@ export default function KeysPage() {
                   ) : (
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs tabular-nums">
-                        {formatTokens(k.weighted_tokens_used)}
+                        {formatTokens(k.tokens_used)}
                         {k.token_budget != null && (
                           <span className="text-muted-foreground">
                             {" / "}
@@ -321,7 +321,7 @@ export default function KeysPage() {
                         )}
                       </span>
                       {k.token_budget != null &&
-                        k.weighted_tokens_used >= k.token_budget && (
+                        k.tokens_used >= k.token_budget && (
                           <Badge variant="destructive" className="text-[10px] px-1 py-0">
                             Exhausted
                           </Badge>
@@ -346,7 +346,7 @@ export default function KeysPage() {
                 </DataTableCell>
                 <DataTableCell className="text-right">
                   <div className="flex items-center justify-end gap-1">
-                    {k.is_active && k.weighted_tokens_used > 0 && (
+                    {k.is_active && k.tokens_used > 0 && (
                       <Button
                         variant="outline"
                         size="xs"

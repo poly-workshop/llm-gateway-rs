@@ -63,7 +63,6 @@ export interface UserKeyInfo {
   is_active: boolean;
   token_budget: number | null;
   tokens_used: number;
-  weighted_tokens_used: number;
   created_at: string;
   updated_at: string;
 }

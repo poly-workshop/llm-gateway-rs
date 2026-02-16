@@ -131,42 +131,12 @@ pub async fn validate_key(
 }
 
 /// List all keys (without exposing hashes or plaintext).
-/// Computes weighted token usage from request_logs with model coefficients.
 pub async fn list_keys(db: &PgPool) -> Result<Vec<UserKeyInfo>, AppError> {
     let keys = sqlx::query_as::<_, UserKey>("SELECT * FROM user_keys ORDER BY created_at DESC")
         .fetch_all(db)
         .await?;
 
-    // Compute per-key weighted token usage from request_logs
-    let weighted: std::collections::HashMap<Uuid, i64> = sqlx::query_as::<_, (Uuid, i64)>(
-        r#"
-        SELECT r.user_key_id,
-               COALESCE(SUM(
-                   ROUND(
-                       COALESCE(r.prompt_tokens, 0) * COALESCE(m.input_token_coefficient, 1.0)
-                       + COALESCE(r.completion_tokens, 0) * COALESCE(m.output_token_coefficient, 1.0)
-                   )
-               ), 0)::BIGINT AS weighted_total
-        FROM request_logs r
-        LEFT JOIN models m ON m.name = r.model_requested
-        WHERE r.user_key_id IS NOT NULL
-        GROUP BY r.user_key_id
-        "#,
-    )
-    .fetch_all(db)
-    .await?
-    .into_iter()
-    .collect();
-
-    Ok(keys
-        .into_iter()
-        .map(|k| {
-            let wt = weighted.get(&k.id).copied().unwrap_or(k.tokens_used);
-            let mut info = UserKeyInfo::from(k);
-            info.weighted_tokens_used = wt;
-            info
-        })
-        .collect())
+    Ok(keys.into_iter().map(UserKeyInfo::from).collect())
 }
 
 /// Rotate a key: invalidate the old key and generate a new one for the same record.
