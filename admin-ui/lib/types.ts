@@ -128,3 +128,36 @@ export interface ListLogsParams {
   key_id?: string;
   model?: string;
 }
+
+// ── Dashboard Stats ───────────────────────────────────────────
+
+export interface HourlyBucket {
+  hour: string;
+  requests: number;
+  errors: number;
+  tokens: number;
+  avg_latency: number;
+}
+
+export interface ModelUsage {
+  model: string;
+  requests: number;
+  tokens: number;
+}
+
+export interface ProviderUsage {
+  provider: string;
+  requests: number;
+  errors: number;
+}
+
+export interface DashboardStats {
+  total_requests: number;
+  total_requests_24h: number;
+  total_errors_24h: number;
+  total_tokens_24h: number;
+  avg_latency_24h: number;
+  requests_per_hour: HourlyBucket[];
+  model_usage: ModelUsage[];
+  provider_usage: ProviderUsage[];
+}

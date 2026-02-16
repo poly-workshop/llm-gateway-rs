@@ -11,6 +11,7 @@ import type {
   UpdateKeyRequest,
   LogListResponse,
   ListLogsParams,
+  DashboardStats,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
@@ -152,4 +153,10 @@ export async function listLogs(
   if (params.model) searchParams.set("model", params.model);
   const qs = searchParams.toString();
   return request<LogListResponse>(`/admin/logs${qs ? `?${qs}` : ""}`);
+}
+
+// ── Dashboard Stats ───────────────────────────────────────────
+
+export async function getStats(): Promise<DashboardStats> {
+  return request<DashboardStats>("/admin/stats");
 }

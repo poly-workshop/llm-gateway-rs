@@ -296,6 +296,14 @@ async fn list_logs(
     Ok(Json(result))
 }
 
+/// GET /admin/stats — dashboard statistics
+async fn get_stats(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<log_service::DashboardStats>, AppError> {
+    let stats = log_service::get_dashboard_stats(&state.db).await?;
+    Ok(Json(stats))
+}
+
 /// Build the admin router (to be nested under /admin)
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
@@ -311,4 +319,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/models/{id}", delete(delete_model_handler).put(update_model_handler))
         // Logs
         .route("/logs", get(list_logs))
+        // Dashboard stats
+        .route("/stats", get(get_stats))
 }

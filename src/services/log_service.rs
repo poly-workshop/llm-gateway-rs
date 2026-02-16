@@ -218,3 +218,186 @@ pub async fn cleanup_old_logs(db: &PgPool, retention_days: u32) -> Result<u64, A
 
     Ok(result.rows_affected())
 }
+
+// ── Dashboard Stats ───────────────────────────────────────────────────
+
+use serde::Serialize;
+
+/// Summary numbers for the dashboard.
+#[derive(Debug, Serialize)]
+pub struct DashboardStats {
+    pub total_requests: i64,
+    pub total_requests_24h: i64,
+    pub total_errors_24h: i64,
+    pub total_tokens_24h: i64,
+    pub avg_latency_24h: f64,
+    /// Requests per hour (last 24h). Each entry: { hour: "HH:00", requests, errors }.
+    pub requests_per_hour: Vec<HourlyBucket>,
+    /// Per-model request count and tokens (last 7 days).
+    pub model_usage: Vec<ModelUsage>,
+    /// Per-provider request count (last 7 days).
+    pub provider_usage: Vec<ProviderUsage>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HourlyBucket {
+    pub hour: String,
+    pub requests: i64,
+    pub errors: i64,
+    pub tokens: i64,
+    pub avg_latency: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelUsage {
+    pub model: String,
+    pub requests: i64,
+    pub tokens: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderUsage {
+    pub provider: String,
+    pub requests: i64,
+    pub errors: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SummaryRow {
+    total_requests: Option<i64>,
+    total_requests_24h: Option<i64>,
+    total_errors_24h: Option<i64>,
+    total_tokens_24h: Option<i64>,
+    avg_latency_24h: Option<f64>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct HourlyRow {
+    hour: chrono::DateTime<chrono::Utc>,
+    requests: i64,
+    errors: i64,
+    tokens: i64,
+    avg_latency: f64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ModelRow {
+    model: String,
+    requests: i64,
+    tokens: i64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ProviderRow {
+    provider: String,
+    requests: i64,
+    errors: i64,
+}
+
+pub async fn get_dashboard_stats(db: &PgPool) -> Result<DashboardStats, AppError> {
+    // 1) Summary
+    let summary = sqlx::query_as::<_, SummaryRow>(
+        r#"
+        SELECT
+            COUNT(*)::BIGINT AS total_requests,
+            COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours')::BIGINT AS total_requests_24h,
+            COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours' AND is_error)::BIGINT AS total_errors_24h,
+            COALESCE(SUM(total_tokens) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours'), 0)::BIGINT AS total_tokens_24h,
+            COALESCE(AVG(latency_ms) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours'), 0)::FLOAT8 AS avg_latency_24h
+        FROM request_logs
+        "#,
+    )
+    .fetch_one(db)
+    .await?;
+
+    // 2) Hourly buckets (last 24h)
+    let hourly_rows = sqlx::query_as::<_, HourlyRow>(
+        r#"
+        SELECT
+            date_trunc('hour', created_at) AS hour,
+            COUNT(*) AS requests,
+            COUNT(*) FILTER (WHERE is_error) AS errors,
+            COALESCE(SUM(total_tokens), 0)::BIGINT AS tokens,
+            COALESCE(AVG(latency_ms), 0)::FLOAT8 AS avg_latency
+        FROM request_logs
+        WHERE created_at >= NOW() - INTERVAL '24 hours'
+        GROUP BY date_trunc('hour', created_at)
+        ORDER BY hour
+        "#,
+    )
+    .fetch_all(db)
+    .await?;
+
+    let requests_per_hour: Vec<HourlyBucket> = hourly_rows
+        .into_iter()
+        .map(|r| HourlyBucket {
+            hour: r.hour.format("%H:%M").to_string(),
+            requests: r.requests,
+            errors: r.errors,
+            tokens: r.tokens,
+            avg_latency: (r.avg_latency * 10.0).round() / 10.0,
+        })
+        .collect();
+
+    // 3) Per-model usage (last 7 days)
+    let model_rows = sqlx::query_as::<_, ModelRow>(
+        r#"
+        SELECT
+            model_requested AS model,
+            COUNT(*) AS requests,
+            COALESCE(SUM(total_tokens), 0)::BIGINT AS tokens
+        FROM request_logs
+        WHERE created_at >= NOW() - INTERVAL '7 days'
+        GROUP BY model_requested
+        ORDER BY requests DESC
+        LIMIT 20
+        "#,
+    )
+    .fetch_all(db)
+    .await?;
+
+    let model_usage: Vec<ModelUsage> = model_rows
+        .into_iter()
+        .map(|r| ModelUsage {
+            model: r.model,
+            requests: r.requests,
+            tokens: r.tokens,
+        })
+        .collect();
+
+    // 4) Per-provider usage (last 7 days)
+    let provider_rows = sqlx::query_as::<_, ProviderRow>(
+        r#"
+        SELECT
+            COALESCE(provider_kind, 'unknown') AS provider,
+            COUNT(*) AS requests,
+            COUNT(*) FILTER (WHERE is_error) AS errors
+        FROM request_logs
+        WHERE created_at >= NOW() - INTERVAL '7 days'
+        GROUP BY provider_kind
+        ORDER BY requests DESC
+        "#,
+    )
+    .fetch_all(db)
+    .await?;
+
+    let provider_usage: Vec<ProviderUsage> = provider_rows
+        .into_iter()
+        .map(|r| ProviderUsage {
+            provider: r.provider,
+            requests: r.requests,
+            errors: r.errors,
+        })
+        .collect();
+
+    Ok(DashboardStats {
+        total_requests: summary.total_requests.unwrap_or(0),
+        total_requests_24h: summary.total_requests_24h.unwrap_or(0),
+        total_errors_24h: summary.total_errors_24h.unwrap_or(0),
+        total_tokens_24h: summary.total_tokens_24h.unwrap_or(0),
+        avg_latency_24h: (summary.avg_latency_24h.unwrap_or(0.0) * 10.0).round() / 10.0,
+        requests_per_hour,
+        model_usage,
+        provider_usage,
+    })
+}
