@@ -3,7 +3,8 @@ use std::env;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
-    pub redis_url: String,
+    /// Redis URL. `None` when running in single-instance mode (SQLite + in-memory cache).
+    pub redis_url: Option<String>,
     pub admin_key: String,
     pub listen_addr: String,
     /// Comma-separated list of allowed CORS origins, or "*" for any.
@@ -26,10 +27,25 @@ fn parse_bool_env(key: &str, default: bool) -> bool {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
+        let database_url = env::var("DATABASE_URL")
+            .map_err(|_| anyhow::anyhow!("DATABASE_URL is required"))?;
+
+        // Redis is optional: when DATABASE_URL points at SQLite and REDIS_URL
+        // is not explicitly set, fall back to in-memory caching.
+        let redis_url = match env::var("REDIS_URL") {
+            Ok(url) => Some(url),
+            Err(_) => {
+                if database_url.starts_with("sqlite:") {
+                    None // single-instance mode
+                } else {
+                    Some("redis://127.0.0.1:6379".into())
+                }
+            }
+        };
+
         Ok(Self {
-            database_url: env::var("DATABASE_URL")
-                .map_err(|_| anyhow::anyhow!("DATABASE_URL is required"))?,
-            redis_url: env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into()),
+            database_url,
+            redis_url,
             admin_key: env::var("ADMIN_KEY")
                 .map_err(|_| anyhow::anyhow!("ADMIN_KEY is required"))?,
             listen_addr: env::var("LISTEN_ADDR")
@@ -43,5 +59,10 @@ impl Config {
             log_request_body: parse_bool_env("LOG_REQUEST_BODY", false),
             log_response_body: parse_bool_env("LOG_RESPONSE_BODY", false),
         })
+    }
+
+    /// Whether the database is SQLite.
+    pub fn is_sqlite(&self) -> bool {
+        self.database_url.starts_with("sqlite:")
     }
 }

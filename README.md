@@ -11,6 +11,7 @@ Routes OpenAI-compatible `/v1/chat/completions` requests to multiple upstream pr
 - **User Key management** — Generate `sk-{uuid}` keys, rotate (old key instantly invalidated), soft-delete
 - **Streaming** — Full SSE streaming passthrough for `stream: true` requests
 - **Two-tier caching** — Redis (hot) for O(1) key validation & model routing, PostgreSQL (cold) for persistence
+- **Single-instance mode** — Run with SQLite + in-memory cache when Redis and PostgreSQL are unavailable
 - **Admin API** — Protected by a static admin key; manage providers, models, and user keys
 
 ## Architecture
@@ -18,16 +19,21 @@ Routes OpenAI-compatible `/v1/chat/completions` requests to multiple upstream pr
 ```text
 Client ──► Gateway (/v1/chat/completions) ──► Provider (OpenAI / OpenRouter / DashScope / Ark)
               │
-              ├─ User Key auth (Redis SET → PG fallback)
-              ├─ Model resolution (Redis HASH → PG fallback)
+              ├─ User Key auth (Cache → DB fallback)
+              ├─ Model resolution (Cache → DB fallback)
               └─ Request rewrite (model name) + proxy
+
+Full mode:          Cache = Redis,     DB = PostgreSQL
+Single-instance:    Cache = In-memory, DB = SQLite
 ```
 
 ```text
 src/
 ├── main.rs              # Entrypoint: init, migrations, server
 ├── config.rs            # Env-based configuration
-├── state.rs             # Shared AppState (PgPool, Redis, HttpClient)
+├── state.rs             # Shared AppState (DbPool, Cache, HttpClient)
+├── db.rs                # DbPool enum (PgPool | SqlitePool) + query macros
+├── cache.rs             # Cache enum (Redis | InMemory)
 ├── error.rs             # Unified error type → HTTP responses
 ├── middleware/
 │   └── auth.rs          # Admin key + User key auth middleware
@@ -41,7 +47,7 @@ src/
 └── services/
     ├── key_service.rs   # Key generation, hashing, validation, rotation
     ├── provider_service.rs  # Provider CRUD
-    └── model_service.rs     # Model CRUD, route resolution, Redis cache
+    └── model_service.rs     # Model CRUD, route resolution, cache
 ```
 
 ## Quick Start
@@ -49,9 +55,11 @@ src/
 ### Prerequisites
 
 - Rust 1.75+
-- Docker & Docker Compose (for PostgreSQL and Redis)
+- Docker & Docker Compose (for PostgreSQL and Redis — **not needed in single-instance mode**)
 
-### 1. Clone and configure
+### Option A: Full deployment (PostgreSQL + Redis)
+
+#### 1. Clone and configure
 
 ```bash
 git clone <repo-url> && cd llm-gateway-rs
@@ -67,19 +75,39 @@ ADMIN_KEY=my-secret-admin-key
 LISTEN_ADDR=0.0.0.0:8080
 ```
 
-### 2. Start dependencies
+#### 2. Start dependencies
 
 ```bash
 docker compose up -d
 ```
 
-### 3. Run the gateway
+#### 3. Run the gateway
 
 ```bash
 cargo run
 ```
 
 The server starts on `http://localhost:8080`. Database migrations run automatically on startup.
+
+### Option B: Single-instance mode (SQLite, no external dependencies)
+
+For lightweight or local deployments, the gateway can run with SQLite and an in-memory cache — no PostgreSQL or Redis required.
+
+```bash
+git clone <repo-url> && cd llm-gateway-rs
+
+# Configure for SQLite
+export DATABASE_URL="sqlite:llm_gateway.db?mode=rwc"
+export ADMIN_KEY="my-secret-admin-key"
+# REDIS_URL is not needed — in-memory cache is used automatically
+
+cargo run
+```
+
+A `llm_gateway.db` file will be created in the working directory with all tables.
+
+> **Note:** Single-instance mode stores the key/model route cache in process memory.
+> It is designed for single-process deployments. For multi-instance or HA setups, use PostgreSQL + Redis.
 
 ## Admin API
 
@@ -262,8 +290,8 @@ The gateway will:
 
 | Variable | Required | Default | Description |
 | -------- | -------- | ------- | ----------- |
-| `DATABASE_URL` | Yes | — | PostgreSQL connection string |
-| `REDIS_URL` | No | `redis://127.0.0.1:6379` | Redis connection string |
+| `DATABASE_URL` | Yes | — | PostgreSQL connection string, or `sqlite:<path>?mode=rwc` for SQLite |
+| `REDIS_URL` | No | `redis://127.0.0.1:6379` (PG mode) / *none* (SQLite mode) | Redis connection string. Omit for in-memory caching with SQLite |
 | `ADMIN_KEY` | Yes | — | Secret key for admin API access |
 | `LISTEN_ADDR` | No | `0.0.0.0:8080` | Server listen address |
 
@@ -272,7 +300,8 @@ The gateway will:
 - **Key format**: `sk-{uuid v4}` — 39 characters, recognizable prefix
 - **Key storage**: Only SHA-256 hashes stored; plaintext returned once on create/rotate (like GitHub PATs)
 - **Redis strategy**: `SET` for key hashes (`SISMEMBER` O(1)), `HASH` for model routes (`HGET` O(1))
-- **Cache warm-up**: On startup, all active keys and model routes are loaded from PG into Redis
+- **Single-instance mode**: When `DATABASE_URL` starts with `sqlite:`, an in-memory cache replaces Redis, and SQLite replaces PostgreSQL — zero external dependencies
+- **Cache warm-up**: On startup, all active keys and model routes are loaded from DB into cache (Redis or in-memory)
 - **Streaming**: Raw byte-stream passthrough — no SSE parsing, minimal latency
 - **Provider API keys**: Stored in PG, listed with masked preview (`sk-x...xxxx`), never cached in plaintext outside the routing lookup
 

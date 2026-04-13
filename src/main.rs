@@ -1,3 +1,6 @@
+#[macro_use]
+mod db;
+mod cache;
 mod config;
 mod error;
 mod middleware;
@@ -9,13 +12,14 @@ mod state;
 use std::sync::Arc;
 
 use axum::{http::HeaderValue, middleware as axum_mw, Router};
-use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
+use cache::Cache;
 use config::Config;
+use db::DbPool;
 use state::AppState;
 
 #[tokio::main]
@@ -34,29 +38,62 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     tracing::info!("Starting LLM Gateway on {}", config.listen_addr);
 
-    // Create Postgres connection pool
-    let db = PgPoolOptions::new()
-        .max_connections(10)
-        .connect(&config.database_url)
-        .await?;
+    // Create database pool (Postgres or SQLite)
+    let db = if config.is_sqlite() {
+        tracing::info!("Using SQLite database");
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect(&config.database_url)
+            .await?;
 
-    // Run migrations
-    sqlx::migrate!("./migrations").run(&db).await?;
+        // Enable WAL mode and foreign keys for better performance and correctness
+        sqlx::query("PRAGMA journal_mode = WAL")
+            .execute(&pool)
+            .await?;
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await?;
+
+        DbPool::Sqlite(pool)
+    } else {
+        tracing::info!("Using PostgreSQL database");
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(10)
+            .connect(&config.database_url)
+            .await?;
+        DbPool::Pg(pool)
+    };
+
+    // Run migrations (select the correct set based on database kind)
+    match &db {
+        DbPool::Pg(pool) => {
+            sqlx::migrate!("./migrations").run(pool).await?;
+        }
+        DbPool::Sqlite(pool) => {
+            sqlx::migrate!("./migrations_sqlite").run(pool).await?;
+        }
+    }
     tracing::info!("Database migrations applied");
 
-    // Create Redis connection manager
-    let redis_client = redis::Client::open(config.redis_url.as_str())?;
-    let mut redis = redis_client.get_connection_manager().await?;
-    tracing::info!("Connected to Redis");
+    // Create cache (Redis or in-memory)
+    let mut cache = if let Some(ref redis_url) = config.redis_url {
+        let redis_client = redis::Client::open(redis_url.as_str())?;
+        let cm = redis_client.get_connection_manager().await?;
+        tracing::info!("Connected to Redis");
+        Cache::Redis(Box::new(cm))
+    } else {
+        tracing::info!("Using in-memory cache (single-instance mode)");
+        Cache::in_memory()
+    };
 
-    // Warm up Redis caches
-    services::key_service::warm_up_redis(&db, &mut redis).await?;
-    services::model_service::warm_up_model_routes(&db, &mut redis).await?;
+    // Warm up caches
+    services::key_service::warm_up_cache(&db, &mut cache).await?;
+    services::model_service::warm_up_model_routes(&db, &mut cache).await?;
 
     // Build shared state
     let state = Arc::new(AppState {
         db,
-        redis,
+        cache,
         config: config.clone(),
         http_client: reqwest::Client::new(),
     });

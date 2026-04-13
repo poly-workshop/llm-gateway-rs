@@ -1,7 +1,7 @@
 use chrono::Utc;
-use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::db::DbPool;
 use crate::error::AppError;
 use crate::models::request_log::{LogListResponse, RequestLogInfo};
 
@@ -27,11 +27,12 @@ pub struct NewRequestLog {
 }
 
 /// Insert a request log entry into the database.
-pub async fn insert_log(db: &PgPool, log: NewRequestLog) -> Result<(), AppError> {
+pub async fn insert_log(db: &DbPool, log: NewRequestLog) -> Result<(), AppError> {
     let id = Uuid::new_v4();
     let now = Utc::now();
 
-    sqlx::query(
+    db_execute!(
+        db,
         r#"
         INSERT INTO request_logs (
             id, request_id, user_key_id, user_key_hash,
@@ -43,28 +44,26 @@ pub async fn insert_log(db: &PgPool, log: NewRequestLog) -> Result<(), AppError>
             $14, $15, $16, $17, $18, $19
         )
         "#,
-    )
-    .bind(id)
-    .bind(&log.request_id)
-    .bind(log.user_key_id)
-    .bind(&log.user_key_hash)
-    .bind(&log.model_requested)
-    .bind(&log.model_sent)
-    .bind(log.provider_id)
-    .bind(&log.provider_kind)
-    .bind(log.status_code)
-    .bind(log.is_error)
-    .bind(log.prompt_tokens)
-    .bind(log.completion_tokens)
-    .bind(log.total_tokens)
-    .bind(log.latency_ms)
-    .bind(log.is_stream)
-    .bind(&log.request_body)
-    .bind(&log.response_body)
-    .bind(&log.error_message)
-    .bind(now)
-    .execute(db)
-    .await?;
+        id,
+        &log.request_id,
+        log.user_key_id,
+        &log.user_key_hash,
+        &log.model_requested,
+        &log.model_sent,
+        log.provider_id,
+        &log.provider_kind,
+        log.status_code,
+        log.is_error,
+        log.prompt_tokens,
+        log.completion_tokens,
+        log.total_tokens,
+        log.latency_ms,
+        log.is_stream,
+        &log.request_body,
+        &log.response_body,
+        &log.error_message,
+        now
+    )?;
 
     Ok(())
 }
@@ -132,7 +131,7 @@ impl From<RequestLogRow> for RequestLogInfo {
 }
 
 /// List logs with offset-based pagination and optional filters.
-pub async fn list_logs(db: &PgPool, params: ListLogsParams) -> Result<LogListResponse, AppError> {
+pub async fn list_logs(db: &DbPool, params: ListLogsParams) -> Result<LogListResponse, AppError> {
     let offset = (params.page - 1).max(0) * params.per_page;
 
     // Build dynamic WHERE clauses
@@ -152,6 +151,9 @@ pub async fn list_logs(db: &PgPool, params: ListLogsParams) -> Result<LogListRes
     };
 
     let count_query = format!("SELECT COUNT(*) FROM request_logs r {where_clause}");
+
+    // Use CAST(ROUND(...) AS BIGINT) instead of Postgres-specific ::BIGINT cast
+    // to stay portable across both PostgreSQL and SQLite.
     let data_query = format!(
         r#"SELECT r.id, r.request_id, r.user_key_id, r.user_key_hash,
                   r.model_requested, r.model_sent, r.provider_id, r.provider_kind,
@@ -159,10 +161,10 @@ pub async fn list_logs(db: &PgPool, params: ListLogsParams) -> Result<LogListRes
                   r.latency_ms, r.is_stream, r.request_body, r.response_body, r.error_message,
                   r.created_at,
                   CASE WHEN r.prompt_tokens IS NOT NULL OR r.completion_tokens IS NOT NULL
-                       THEN ROUND(
+                       THEN CAST(ROUND(
                            COALESCE(r.prompt_tokens, 0) * COALESCE(m.input_token_coefficient, 1.0)
                            + COALESCE(r.completion_tokens, 0) * COALESCE(m.output_token_coefficient, 1.0)
-                       )::BIGINT
+                       ) AS BIGINT)
                        ELSE NULL
                   END AS weighted_total_tokens
            FROM request_logs r
@@ -172,30 +174,39 @@ pub async fn list_logs(db: &PgPool, params: ListLogsParams) -> Result<LogListRes
            LIMIT $1 OFFSET $2"#
     );
 
-    // Execute count query
-    let total: i64 = {
-        let mut q = sqlx::query_scalar::<_, i64>(&count_query);
-        if let Some(ref kid) = params.key_id {
-            q = q.bind(kid);
-        }
-        if let Some(ref m) = params.model {
-            q = q.bind(m);
-        }
-        q.fetch_one(db).await?
-    };
+    // Execute count and data queries — must build separate query objects per DB variant
+    // because sqlx locks the database type at bind time.
+    macro_rules! run_list_queries {
+        ($pool:expr) => {{
+            let total: i64 = {
+                let mut q = sqlx::query_scalar::<_, i64>(&count_query);
+                if let Some(ref kid) = params.key_id {
+                    q = q.bind(kid);
+                }
+                if let Some(ref m) = params.model {
+                    q = q.bind(m);
+                }
+                q.fetch_one($pool).await?
+            };
+            let rows: Vec<RequestLogRow> = {
+                let mut q = sqlx::query_as::<_, RequestLogRow>(&data_query)
+                    .bind(params.per_page)
+                    .bind(offset);
+                if let Some(ref kid) = params.key_id {
+                    q = q.bind(kid);
+                }
+                if let Some(ref m) = params.model {
+                    q = q.bind(m);
+                }
+                q.fetch_all($pool).await?
+            };
+            (total, rows)
+        }};
+    }
 
-    // Execute data query
-    let rows: Vec<RequestLogRow> = {
-        let mut q = sqlx::query_as::<_, RequestLogRow>(&data_query)
-            .bind(params.per_page)
-            .bind(offset);
-        if let Some(ref kid) = params.key_id {
-            q = q.bind(kid);
-        }
-        if let Some(ref m) = params.model {
-            q = q.bind(m);
-        }
-        q.fetch_all(db).await?
+    let (total, rows) = match db {
+        DbPool::Pg(p) => run_list_queries!(p),
+        DbPool::Sqlite(p) => run_list_queries!(p),
     };
 
     Ok(LogListResponse {
@@ -208,15 +219,14 @@ pub async fn list_logs(db: &PgPool, params: ListLogsParams) -> Result<LogListRes
 
 /// Delete request logs older than `retention_days` days.
 /// Returns the number of rows deleted.
-pub async fn cleanup_old_logs(db: &PgPool, retention_days: u32) -> Result<u64, AppError> {
-    let result = sqlx::query(
-        "DELETE FROM request_logs WHERE created_at < NOW() - make_interval(days => $1)",
-    )
-    .bind(retention_days as i32)
-    .execute(db)
-    .await?;
-
-    Ok(result.rows_affected())
+pub async fn cleanup_old_logs(db: &DbPool, retention_days: u32) -> Result<u64, AppError> {
+    let cutoff = Utc::now() - chrono::Duration::days(retention_days as i64);
+    let rows = db_execute!(
+        db,
+        "DELETE FROM request_logs WHERE created_at < $1",
+        cutoff
+    )?;
+    Ok(rows)
 }
 
 // ── Dashboard Stats ───────────────────────────────────────────────────
@@ -273,7 +283,7 @@ struct SummaryRow {
 
 #[derive(Debug, sqlx::FromRow)]
 struct HourlyRow {
-    hour: chrono::DateTime<chrono::Utc>,
+    hour: String,
     requests: i64,
     errors: i64,
     tokens: i64,
@@ -294,67 +304,90 @@ struct ProviderRow {
     errors: i64,
 }
 
-pub async fn get_dashboard_stats(db: &PgPool) -> Result<DashboardStats, AppError> {
-    // 1) Summary
-    let summary = sqlx::query_as::<_, SummaryRow>(
+pub async fn get_dashboard_stats(db: &DbPool) -> Result<DashboardStats, AppError> {
+    let cutoff_24h = Utc::now() - chrono::Duration::hours(24);
+    let cutoff_7d = Utc::now() - chrono::Duration::days(7);
+
+    // 1) Summary — portable SQL using CASE WHEN instead of FILTER
+    let summary: SummaryRow = db_query_as!(
+        one, db,
         r#"
         SELECT
-            COUNT(*)::BIGINT AS total_requests,
-            COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours')::BIGINT AS total_requests_24h,
-            COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours' AND is_error)::BIGINT AS total_errors_24h,
-            COALESCE(SUM(total_tokens) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours'), 0)::BIGINT AS total_tokens_24h,
-            COALESCE(AVG(latency_ms) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours'), 0)::FLOAT8 AS avg_latency_24h
+            COUNT(*) AS total_requests,
+            SUM(CASE WHEN created_at >= $1 THEN 1 ELSE 0 END) AS total_requests_24h,
+            SUM(CASE WHEN created_at >= $1 AND is_error THEN 1 ELSE 0 END) AS total_errors_24h,
+            COALESCE(SUM(CASE WHEN created_at >= $1 THEN total_tokens ELSE 0 END), 0) AS total_tokens_24h,
+            COALESCE(AVG(CASE WHEN created_at >= $1 THEN latency_ms END), 0.0) AS avg_latency_24h
         FROM request_logs
         "#,
-    )
-    .fetch_one(db)
-    .await?;
+        cutoff_24h
+    )?;
 
-    // 2) Hourly buckets (last 24h)
-    let hourly_rows = sqlx::query_as::<_, HourlyRow>(
+    // 2) Hourly buckets (last 24h) — need db-specific date truncation
+    let hourly_sql = if db.is_sqlite() {
         r#"
         SELECT
-            date_trunc('hour', created_at) AS hour,
+            strftime('%Y-%m-%d %H:00:00', created_at) AS hour,
             COUNT(*) AS requests,
-            COUNT(*) FILTER (WHERE is_error) AS errors,
-            COALESCE(SUM(total_tokens), 0)::BIGINT AS tokens,
-            COALESCE(AVG(latency_ms), 0)::FLOAT8 AS avg_latency
+            SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS errors,
+            COALESCE(SUM(total_tokens), 0) AS tokens,
+            COALESCE(AVG(latency_ms), 0.0) AS avg_latency
         FROM request_logs
-        WHERE created_at >= NOW() - INTERVAL '24 hours'
+        WHERE created_at >= $1
+        GROUP BY strftime('%Y-%m-%d %H:00:00', created_at)
+        ORDER BY hour
+        "#
+    } else {
+        r#"
+        SELECT
+            to_char(date_trunc('hour', created_at), 'YYYY-MM-DD HH24:00:00') AS hour,
+            COUNT(*) AS requests,
+            SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS errors,
+            COALESCE(SUM(total_tokens), 0) AS tokens,
+            COALESCE(AVG(latency_ms), 0.0) AS avg_latency
+        FROM request_logs
+        WHERE created_at >= $1
         GROUP BY date_trunc('hour', created_at)
         ORDER BY hour
-        "#,
-    )
-    .fetch_all(db)
-    .await?;
+        "#
+    };
+
+    let hourly_rows: Vec<HourlyRow> = db_query_as!(all, db, hourly_sql, cutoff_24h)?;
 
     let requests_per_hour: Vec<HourlyBucket> = hourly_rows
         .into_iter()
-        .map(|r| HourlyBucket {
-            hour: r.hour.format("%H:%M").to_string(),
-            requests: r.requests,
-            errors: r.errors,
-            tokens: r.tokens,
-            avg_latency: (r.avg_latency * 10.0).round() / 10.0,
+        .map(|r| {
+            // Extract "HH:MM" from the hour string (expected format: "YYYY-MM-DD HH:00:00")
+            let display_hour = r.hour.find(' ')
+                .and_then(|pos| r.hour.get(pos + 1..pos + 6))
+                .unwrap_or(&r.hour)
+                .to_string();
+            HourlyBucket {
+                hour: display_hour,
+                requests: r.requests,
+                errors: r.errors,
+                tokens: r.tokens,
+                avg_latency: (r.avg_latency * 10.0).round() / 10.0,
+            }
         })
         .collect();
 
-    // 3) Per-model usage (last 7 days)
-    let model_rows = sqlx::query_as::<_, ModelRow>(
+    // 3) Per-model usage (last 7 days) — portable SQL
+    let model_rows: Vec<ModelRow> = db_query_as!(
+        all, db,
         r#"
         SELECT
             model_requested AS model,
             COUNT(*) AS requests,
-            COALESCE(SUM(total_tokens), 0)::BIGINT AS tokens
+            COALESCE(SUM(total_tokens), 0) AS tokens
         FROM request_logs
-        WHERE created_at >= NOW() - INTERVAL '7 days'
+        WHERE created_at >= $1
         GROUP BY model_requested
         ORDER BY requests DESC
         LIMIT 20
         "#,
-    )
-    .fetch_all(db)
-    .await?;
+        cutoff_7d
+    )?;
 
     let model_usage: Vec<ModelUsage> = model_rows
         .into_iter()
@@ -365,21 +398,21 @@ pub async fn get_dashboard_stats(db: &PgPool) -> Result<DashboardStats, AppError
         })
         .collect();
 
-    // 4) Per-provider usage (last 7 days)
-    let provider_rows = sqlx::query_as::<_, ProviderRow>(
+    // 4) Per-provider usage (last 7 days) — portable SQL
+    let provider_rows: Vec<ProviderRow> = db_query_as!(
+        all, db,
         r#"
         SELECT
             COALESCE(provider_kind, 'unknown') AS provider,
             COUNT(*) AS requests,
-            COUNT(*) FILTER (WHERE is_error) AS errors
+            SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS errors
         FROM request_logs
-        WHERE created_at >= NOW() - INTERVAL '7 days'
+        WHERE created_at >= $1
         GROUP BY provider_kind
         ORDER BY requests DESC
         "#,
-    )
-    .fetch_all(db)
-    .await?;
+        cutoff_7d
+    )?;
 
     let provider_usage: Vec<ProviderUsage> = provider_rows
         .into_iter()

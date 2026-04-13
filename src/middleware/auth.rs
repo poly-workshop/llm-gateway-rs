@@ -58,7 +58,7 @@ pub async fn admin_auth(
     next.run(req).await
 }
 
-/// Middleware that validates a User Key against Redis / PG.
+/// Middleware that validates a User Key against cache / DB.
 pub async fn user_key_auth(
     State(state): State<Arc<AppState>>,
     req: Request,
@@ -75,8 +75,8 @@ pub async fn user_key_auth(
         }
     };
 
-    let mut redis = state.redis.clone();
-    match key_service::validate_key(&token, &mut redis, &state.db).await {
+    let mut cache = state.cache.clone();
+    match key_service::validate_key(&token, &mut cache, &state.db).await {
         Ok(Some(v)) => {
             let mut req = req;
             req.extensions_mut().insert(KeyIdentity {
