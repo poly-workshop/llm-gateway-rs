@@ -71,8 +71,8 @@ async fn chat_completions(
     }
 
     // Resolve model → provider routing
-    let mut redis = state.redis.clone();
-    let route = model_service::resolve_model_route(&model_name, &mut redis, &state.db)
+    let mut cache = state.cache.clone();
+    let route = model_service::resolve_model_route(&model_name, &mut cache, &state.db)
         .await
         .map_err(|e| {
             tracing::error!("Model route resolution error: {}", e);

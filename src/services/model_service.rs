@@ -1,14 +1,13 @@
 use chrono::Utc;
-use redis::aio::ConnectionManager;
-use redis::AsyncCommands;
-use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::cache::Cache;
+use crate::db::DbPool;
 use crate::error::AppError;
 use crate::models::model::{Model, ModelInfo, ModelRoute};
 use crate::models::provider::Provider;
 
-const REDIS_MODEL_ROUTES_HASH: &str = "gateway:model_routes";
+const CACHE_MODEL_ROUTES_HASH: &str = "gateway:model_routes";
 
 /// Create a new model mapping.
 pub async fn create_model(
@@ -17,38 +16,33 @@ pub async fn create_model(
     provider_model_name: Option<&str>,
     input_token_coefficient: f64,
     output_token_coefficient: f64,
-    db: &PgPool,
-    redis: &mut ConnectionManager,
+    db: &DbPool,
+    cache: &mut Cache,
 ) -> Result<ModelInfo, AppError> {
     // Verify provider exists
-    let provider = sqlx::query_as::<_, Provider>("SELECT * FROM providers WHERE id = $1")
-        .bind(provider_id)
-        .fetch_optional(db)
-        .await?
-        .ok_or_else(|| AppError::BadRequest(format!("Provider {provider_id} not found")))?;
+    let provider: Provider = db_query_as!(
+        optional, db,
+        "SELECT * FROM providers WHERE id = $1",
+        provider_id
+    )?
+    .ok_or_else(|| AppError::BadRequest(format!("Provider {provider_id} not found")))?;
 
     let id = Uuid::new_v4();
     let now = Utc::now();
 
-    sqlx::query(
+    db_execute!(
+        db,
         r#"
         INSERT INTO models (id, name, provider_id, provider_model_name, is_active,
                             input_token_coefficient, output_token_coefficient, created_at, updated_at)
         VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $7)
         "#,
-    )
-    .bind(id)
-    .bind(name)
-    .bind(provider_id)
-    .bind(provider_model_name)
-    .bind(input_token_coefficient)
-    .bind(output_token_coefficient)
-    .bind(now)
-    .execute(db)
-    .await?;
+        id, name, provider_id, provider_model_name,
+        input_token_coefficient, output_token_coefficient, now
+    )?;
 
-    // Update Redis cache
-    cache_model_route(name, provider_model_name, input_token_coefficient, output_token_coefficient, &provider, redis).await?;
+    // Update cache
+    cache_model_route(name, provider_model_name, input_token_coefficient, output_token_coefficient, &provider, cache).await?;
 
     Ok(ModelInfo {
         id,
@@ -65,8 +59,9 @@ pub async fn create_model(
 }
 
 /// List all models with their provider names.
-pub async fn list_models(db: &PgPool) -> Result<Vec<ModelInfo>, AppError> {
-    let rows = sqlx::query_as::<_, ModelWithProvider>(
+pub async fn list_models(db: &DbPool) -> Result<Vec<ModelInfo>, AppError> {
+    let rows: Vec<ModelWithProvider> = db_query_as!(
+        all, db,
         r#"
         SELECT m.id, m.name, m.provider_id, m.provider_model_name, m.is_active,
                m.input_token_coefficient, m.output_token_coefficient,
@@ -74,10 +69,8 @@ pub async fn list_models(db: &PgPool) -> Result<Vec<ModelInfo>, AppError> {
         FROM models m
         JOIN providers p ON m.provider_id = p.id
         ORDER BY m.created_at DESC
-        "#,
-    )
-    .fetch_all(db)
-    .await?;
+        "#
+    )?;
 
     Ok(rows
         .into_iter()
@@ -96,30 +89,28 @@ pub async fn list_models(db: &PgPool) -> Result<Vec<ModelInfo>, AppError> {
         .collect())
 }
 
-/// Delete a model and remove from Redis cache.
+/// Delete a model and remove from cache.
 pub async fn delete_model(
     id: Uuid,
-    db: &PgPool,
-    redis: &mut ConnectionManager,
+    db: &DbPool,
+    cache: &mut Cache,
 ) -> Result<(), AppError> {
-    let model = sqlx::query_as::<_, Model>("SELECT * FROM models WHERE id = $1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or(AppError::NotFound)?;
+    let model: Model = db_query_as!(
+        optional, db,
+        "SELECT * FROM models WHERE id = $1",
+        id
+    )?
+    .ok_or(AppError::NotFound)?;
 
-    sqlx::query("DELETE FROM models WHERE id = $1")
-        .bind(id)
-        .execute(db)
-        .await?;
+    db_execute!(db, "DELETE FROM models WHERE id = $1", id)?;
 
-    // Remove from Redis
-    let _: () = redis.hdel(REDIS_MODEL_ROUTES_HASH, &model.name).await?;
+    // Remove from cache
+    cache.hdel(CACHE_MODEL_ROUTES_HASH, &model.name).await?;
 
     Ok(())
 }
 
-/// Update an existing model and rebuild Redis cache.
+/// Update an existing model and rebuild cache.
 pub async fn update_model(
     id: Uuid,
     name: Option<&str>,
@@ -128,14 +119,15 @@ pub async fn update_model(
     is_active: Option<bool>,
     input_token_coefficient: Option<f64>,
     output_token_coefficient: Option<f64>,
-    db: &PgPool,
-    redis: &mut ConnectionManager,
+    db: &DbPool,
+    cache: &mut Cache,
 ) -> Result<ModelInfo, AppError> {
-    let existing = sqlx::query_as::<_, Model>("SELECT * FROM models WHERE id = $1")
-        .bind(id)
-        .fetch_optional(db)
-        .await?
-        .ok_or(AppError::NotFound)?;
+    let existing: Model = db_query_as!(
+        optional, db,
+        "SELECT * FROM models WHERE id = $1",
+        id
+    )?
+    .ok_or(AppError::NotFound)?;
 
     let new_name = name.map(|s| s.to_string()).unwrap_or(existing.name.clone());
     let new_provider_id = provider_id.unwrap_or(existing.provider_id);
@@ -149,41 +141,38 @@ pub async fn update_model(
 
     // If provider changed, verify it exists
     if new_provider_id != existing.provider_id {
-        sqlx::query_as::<_, Provider>("SELECT * FROM providers WHERE id = $1")
-            .bind(new_provider_id)
-            .fetch_optional(db)
-            .await?
-            .ok_or_else(|| AppError::BadRequest(format!("Provider {new_provider_id} not found")))?;
+        let _: Provider = db_query_as!(
+            optional, db,
+            "SELECT * FROM providers WHERE id = $1",
+            new_provider_id
+        )?
+        .ok_or_else(|| AppError::BadRequest(format!("Provider {new_provider_id} not found")))?;
     }
 
-    sqlx::query(
+    let now = Utc::now();
+    db_execute!(
+        db,
         r#"
         UPDATE models
         SET name = $1, provider_id = $2, provider_model_name = $3, is_active = $4,
-            input_token_coefficient = $5, output_token_coefficient = $6, updated_at = NOW()
-        WHERE id = $7
+            input_token_coefficient = $5, output_token_coefficient = $6, updated_at = $7
+        WHERE id = $8
         "#,
-    )
-    .bind(&new_name)
-    .bind(new_provider_id)
-    .bind(&new_provider_model_name)
-    .bind(new_is_active)
-    .bind(new_input_coeff)
-    .bind(new_output_coeff)
-    .bind(id)
-    .execute(db)
-    .await?;
+        &new_name, new_provider_id, &new_provider_model_name, new_is_active,
+        new_input_coeff, new_output_coeff, now, id
+    )?;
 
-    // Remove old name from Redis if name changed
+    // Remove old name from cache if name changed
     if new_name != existing.name {
-        let _: () = redis.hdel(REDIS_MODEL_ROUTES_HASH, &existing.name).await?;
+        cache.hdel(CACHE_MODEL_ROUTES_HASH, &existing.name).await?;
     }
 
     // Rebuild the full cache to keep everything consistent
-    warm_up_model_routes(db, redis).await?;
+    warm_up_model_routes(db, cache).await?;
 
     // Fetch updated row with provider name
-    let row = sqlx::query_as::<_, ModelWithProvider>(
+    let row: ModelWithProvider = db_query_as!(
+        one, db,
         r#"
         SELECT m.id, m.name, m.provider_id, m.provider_model_name, m.is_active,
                m.input_token_coefficient, m.output_token_coefficient,
@@ -192,10 +181,8 @@ pub async fn update_model(
         JOIN providers p ON m.provider_id = p.id
         WHERE m.id = $1
         "#,
-    )
-    .bind(id)
-    .fetch_one(db)
-    .await?;
+        id
+    )?;
 
     Ok(ModelInfo {
         id: row.id,
@@ -212,22 +199,23 @@ pub async fn update_model(
 }
 
 /// Resolve a user-facing model name to its routing information.
-/// Fast path: Redis hash lookup. Slow path: PG query + backfill Redis.
+/// Fast path: cache lookup. Slow path: DB query + backfill cache.
 pub async fn resolve_model_route(
     model_name: &str,
-    redis: &mut ConnectionManager,
-    db: &PgPool,
+    cache: &mut Cache,
+    db: &DbPool,
 ) -> Result<Option<ModelRoute>, AppError> {
-    // Fast path: check Redis
-    let cached: Option<String> = redis.hget(REDIS_MODEL_ROUTES_HASH, model_name).await?;
+    // Fast path: check cache
+    let cached: Option<String> = cache.hget(CACHE_MODEL_ROUTES_HASH, model_name).await?;
     if let Some(json_str) = cached {
         if let Ok(route) = serde_json::from_str::<ModelRoute>(&json_str) {
             return Ok(Some(route));
         }
     }
 
-    // Slow path: query PG
-    let row = sqlx::query_as::<_, ModelWithProviderFull>(
+    // Slow path: query DB
+    let row: Option<ModelWithProviderFull> = db_query_as!(
+        optional, db,
         r#"
         SELECT m.name AS model_name, m.provider_model_name, m.provider_id,
                m.input_token_coefficient, m.output_token_coefficient,
@@ -236,10 +224,8 @@ pub async fn resolve_model_route(
         JOIN providers p ON m.provider_id = p.id
         WHERE m.name = $1 AND m.is_active = TRUE AND p.is_active = TRUE
         "#,
-    )
-    .bind(model_name)
-    .fetch_optional(db)
-    .await?;
+        model_name
+    )?;
 
     match row {
         Some(r) => {
@@ -255,11 +241,9 @@ pub async fn resolve_model_route(
                 output_token_coefficient: r.output_token_coefficient,
             };
 
-            // Backfill Redis
+            // Backfill cache
             if let Ok(json_str) = serde_json::to_string(&route) {
-                let _: Result<(), _> = redis
-                    .hset(REDIS_MODEL_ROUTES_HASH, model_name, &json_str)
-                    .await;
+                let _ = cache.hset(CACHE_MODEL_ROUTES_HASH, model_name, &json_str).await;
             }
 
             Ok(Some(route))
@@ -268,12 +252,13 @@ pub async fn resolve_model_route(
     }
 }
 
-/// Warm up Redis with all active model routes (call on startup).
+/// Warm up cache with all active model routes (call on startup).
 pub async fn warm_up_model_routes(
-    db: &PgPool,
-    redis: &mut ConnectionManager,
+    db: &DbPool,
+    cache: &mut Cache,
 ) -> Result<(), AppError> {
-    let rows = sqlx::query_as::<_, ModelWithProviderFull>(
+    let rows: Vec<ModelWithProviderFull> = db_query_as!(
+        all, db,
         r#"
         SELECT m.name AS model_name, m.provider_model_name, m.provider_id,
                m.input_token_coefficient, m.output_token_coefficient,
@@ -281,16 +266,11 @@ pub async fn warm_up_model_routes(
         FROM models m
         JOIN providers p ON m.provider_id = p.id
         WHERE m.is_active = TRUE AND p.is_active = TRUE
-        "#,
-    )
-    .fetch_all(db)
-    .await?;
+        "#
+    )?;
 
     // Clear stale cache
-    let _: () = redis::cmd("DEL")
-        .arg(REDIS_MODEL_ROUTES_HASH)
-        .query_async(redis)
-        .await?;
+    cache.del(CACHE_MODEL_ROUTES_HASH).await?;
 
     for r in &rows {
         let route = ModelRoute {
@@ -307,13 +287,11 @@ pub async fn warm_up_model_routes(
         };
 
         if let Ok(json_str) = serde_json::to_string(&route) {
-            let _: Result<(), _> = redis
-                .hset(REDIS_MODEL_ROUTES_HASH, &r.model_name, &json_str)
-                .await;
+            let _ = cache.hset(CACHE_MODEL_ROUTES_HASH, &r.model_name, &json_str).await;
         }
     }
 
-    tracing::info!("Warmed up Redis with {} model routes", rows.len());
+    tracing::info!("Warmed up cache with {} model routes", rows.len());
     Ok(())
 }
 
@@ -345,14 +323,14 @@ struct ModelWithProviderFull {
     provider_kind: String,
 }
 
-/// Cache a single model route into Redis.
+/// Cache a single model route.
 async fn cache_model_route(
     model_name: &str,
     provider_model_name: Option<&str>,
     input_token_coefficient: f64,
     output_token_coefficient: f64,
     provider: &Provider,
-    redis: &mut ConnectionManager,
+    cache: &mut Cache,
 ) -> Result<(), AppError> {
     let route = ModelRoute {
         provider_id: provider.id,
@@ -369,6 +347,6 @@ async fn cache_model_route(
     let json_str = serde_json::to_string(&route)
         .map_err(|e| AppError::Internal(format!("JSON serialization error: {e}")))?;
 
-    let _: () = redis.hset(REDIS_MODEL_ROUTES_HASH, model_name, &json_str).await?;
+    cache.hset(CACHE_MODEL_ROUTES_HASH, model_name, &json_str).await?;
     Ok(())
 }

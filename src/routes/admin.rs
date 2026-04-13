@@ -39,8 +39,8 @@ async fn create_key(
         return Err(AppError::BadRequest("name is required".into()));
     }
 
-    let mut redis = state.redis.clone();
-    let result = key_service::create_key(&body.name, body.token_budget, &state.db, &mut redis).await?;
+    let mut cache = state.cache.clone();
+    let result = key_service::create_key(&body.name, body.token_budget, &state.db, &mut cache).await?;
 
     Ok((StatusCode::CREATED, Json(result)))
 }
@@ -58,8 +58,8 @@ async fn rotate_key(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<crate::models::user_key::UserKeyCreated>, AppError> {
-    let mut redis = state.redis.clone();
-    let result = key_service::rotate_key(id, &state.db, &mut redis).await?;
+    let mut cache = state.cache.clone();
+    let result = key_service::rotate_key(id, &state.db, &mut cache).await?;
     Ok(Json(result))
 }
 
@@ -68,8 +68,8 @@ async fn delete_key_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    let mut redis = state.redis.clone();
-    key_service::delete_key(id, &state.db, &mut redis).await?;
+    let mut cache = state.cache.clone();
+    key_service::delete_key(id, &state.db, &mut cache).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -157,8 +157,8 @@ async fn update_provider(
     .await?;
 
     // Rebuild model route cache since provider details may have changed
-    let mut redis = state.redis.clone();
-    model_service::warm_up_model_routes(&state.db, &mut redis).await?;
+    let mut cache = state.cache.clone();
+    model_service::warm_up_model_routes(&state.db, &mut cache).await?;
 
     Ok(Json(result))
 }
@@ -171,8 +171,8 @@ async fn delete_provider_handler(
     provider_service::delete_provider(id, &state.db).await?;
 
     // Rebuild model route cache
-    let mut redis = state.redis.clone();
-    model_service::warm_up_model_routes(&state.db, &mut redis).await?;
+    let mut cache = state.cache.clone();
+    model_service::warm_up_model_routes(&state.db, &mut cache).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -202,7 +202,7 @@ async fn create_model(
         return Err(AppError::BadRequest("name is required".into()));
     }
 
-    let mut redis = state.redis.clone();
+    let mut cache = state.cache.clone();
     let result = model_service::create_model(
         &body.name,
         body.provider_id,
@@ -210,7 +210,7 @@ async fn create_model(
         body.input_token_coefficient.unwrap_or(1.0),
         body.output_token_coefficient.unwrap_or(1.0),
         &state.db,
-        &mut redis,
+        &mut cache,
     )
     .await?;
 
@@ -230,8 +230,8 @@ async fn delete_model_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    let mut redis = state.redis.clone();
-    model_service::delete_model(id, &state.db, &mut redis).await?;
+    let mut cache = state.cache.clone();
+    model_service::delete_model(id, &state.db, &mut cache).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -252,7 +252,7 @@ async fn update_model_handler(
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateModelRequest>,
 ) -> Result<Json<crate::models::model::ModelInfo>, AppError> {
-    let mut redis = state.redis.clone();
+    let mut cache = state.cache.clone();
     let result = model_service::update_model(
         id,
         body.name.as_deref(),
@@ -262,7 +262,7 @@ async fn update_model_handler(
         body.input_token_coefficient,
         body.output_token_coefficient,
         &state.db,
-        &mut redis,
+        &mut cache,
     )
     .await?;
 
