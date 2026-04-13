@@ -152,7 +152,8 @@ pub async fn list_logs(db: &DbPool, params: ListLogsParams) -> Result<LogListRes
 
     let count_query = format!("SELECT COUNT(*) FROM request_logs r {where_clause}");
 
-    // Use CAST(ROUND(...) AS BIGINT) which is portable across PG and SQLite
+    // Use CAST(ROUND(...) AS BIGINT) instead of Postgres-specific ::BIGINT cast
+    // to stay portable across both PostgreSQL and SQLite.
     let data_query = format!(
         r#"SELECT r.id, r.request_id, r.user_key_id, r.user_key_hash,
                   r.model_requested, r.model_sent, r.provider_id, r.provider_kind,
@@ -356,12 +357,11 @@ pub async fn get_dashboard_stats(db: &DbPool) -> Result<DashboardStats, AppError
     let requests_per_hour: Vec<HourlyBucket> = hourly_rows
         .into_iter()
         .map(|r| {
-            // Extract HH:MM from the hour string (format: "YYYY-MM-DD HH:00:00")
-            let display_hour = if r.hour.len() >= 16 {
-                r.hour[11..16].to_string()
-            } else {
-                r.hour.clone()
-            };
+            // Extract "HH:MM" from the hour string (expected format: "YYYY-MM-DD HH:00:00")
+            let display_hour = r.hour.find(' ')
+                .and_then(|pos| r.hour.get(pos + 1..pos + 6))
+                .unwrap_or(&r.hour)
+                .to_string();
             HourlyBucket {
                 hour: display_hour,
                 requests: r.requests,

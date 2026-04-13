@@ -243,7 +243,9 @@ pub async fn resolve_model_route(
 
             // Backfill cache
             if let Ok(json_str) = serde_json::to_string(&route) {
-                let _ = cache.hset(CACHE_MODEL_ROUTES_HASH, model_name, &json_str).await;
+                if let Err(e) = cache.hset(CACHE_MODEL_ROUTES_HASH, model_name, &json_str).await {
+                    tracing::warn!("Failed to backfill model route cache: {e}");
+                }
             }
 
             Ok(Some(route))
@@ -287,7 +289,9 @@ pub async fn warm_up_model_routes(
         };
 
         if let Ok(json_str) = serde_json::to_string(&route) {
-            let _ = cache.hset(CACHE_MODEL_ROUTES_HASH, &r.model_name, &json_str).await;
+            if let Err(e) = cache.hset(CACHE_MODEL_ROUTES_HASH, &r.model_name, &json_str).await {
+                tracing::warn!("Failed to cache model route '{}': {e}", r.model_name);
+            }
         }
     }
 

@@ -22,7 +22,10 @@ impl DbPool {
 
 /// `db_query_as!(mode, pool, sql [, bind]*)` — run a `query_as` against DbPool.
 ///
-/// `mode` is one of `optional`, `all`, `one`.
+/// Modes:
+///   - `optional` — `fetch_optional`, returns `Result<Option<T>, sqlx::Error>`
+///   - `all`      — `fetch_all`, returns `Result<Vec<T>, sqlx::Error>`
+///   - `one`      — `fetch_one`, returns `Result<T, sqlx::Error>` (errors if no row)
 macro_rules! db_query_as {
     (optional, $pool:expr, $sql:expr $(, $bind:expr)*) => {{
         match $pool {
