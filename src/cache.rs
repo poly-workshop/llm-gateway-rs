@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 /// an in-memory store (for single-instance / SQLite mode).
 #[derive(Clone)]
 pub enum Cache {
-    Redis(redis::aio::ConnectionManager),
+    Redis(Box<redis::aio::ConnectionManager>),
     InMemory(Arc<InMemoryCache>),
 }
 
@@ -38,7 +38,7 @@ impl Cache {
     pub async fn sadd(&mut self, key: &str, member: &str) -> Result<(), crate::error::AppError> {
         match self {
             Cache::Redis(cm) => {
-                let _: () = redis::AsyncCommands::sadd(cm, key, member).await?;
+                let _: () = redis::AsyncCommands::sadd(cm.as_mut(), key, member).await?;
                 Ok(())
             }
             Cache::InMemory(store) => {
@@ -55,12 +55,12 @@ impl Cache {
     pub async fn sismember(&mut self, key: &str, member: &str) -> Result<bool, crate::error::AppError> {
         match self {
             Cache::Redis(cm) => {
-                let exists: bool = redis::AsyncCommands::sismember(cm, key, member).await?;
+                let exists: bool = redis::AsyncCommands::sismember(cm.as_mut(), key, member).await?;
                 Ok(exists)
             }
             Cache::InMemory(store) => {
                 let sets = store.sets.read().await;
-                Ok(sets.get(key).map_or(false, |s| s.contains(member)))
+                Ok(sets.get(key).is_some_and(|s| s.contains(member)))
             }
         }
     }
@@ -69,7 +69,7 @@ impl Cache {
     pub async fn srem(&mut self, key: &str, member: &str) -> Result<(), crate::error::AppError> {
         match self {
             Cache::Redis(cm) => {
-                let _: () = redis::AsyncCommands::srem(cm, key, member).await?;
+                let _: () = redis::AsyncCommands::srem(cm.as_mut(), key, member).await?;
                 Ok(())
             }
             Cache::InMemory(store) => {
@@ -88,7 +88,7 @@ impl Cache {
     pub async fn hget(&mut self, key: &str, field: &str) -> Result<Option<String>, crate::error::AppError> {
         match self {
             Cache::Redis(cm) => {
-                let val: Option<String> = redis::AsyncCommands::hget(cm, key, field).await?;
+                let val: Option<String> = redis::AsyncCommands::hget(cm.as_mut(), key, field).await?;
                 Ok(val)
             }
             Cache::InMemory(store) => {
@@ -105,7 +105,7 @@ impl Cache {
     pub async fn hset(&mut self, key: &str, field: &str, value: &str) -> Result<(), crate::error::AppError> {
         match self {
             Cache::Redis(cm) => {
-                let _: () = redis::AsyncCommands::hset(cm, key, field, value).await?;
+                let _: () = redis::AsyncCommands::hset(cm.as_mut(), key, field, value).await?;
                 Ok(())
             }
             Cache::InMemory(store) => {
@@ -123,7 +123,7 @@ impl Cache {
     pub async fn hdel(&mut self, key: &str, field: &str) -> Result<(), crate::error::AppError> {
         match self {
             Cache::Redis(cm) => {
-                let _: () = redis::AsyncCommands::hdel(cm, key, field).await?;
+                let _: () = redis::AsyncCommands::hdel(cm.as_mut(), key, field).await?;
                 Ok(())
             }
             Cache::InMemory(store) => {
@@ -144,7 +144,7 @@ impl Cache {
             Cache::Redis(cm) => {
                 let _: () = redis::cmd("DEL")
                     .arg(key)
-                    .query_async(cm)
+                    .query_async(cm.as_mut())
                     .await?;
                 Ok(())
             }

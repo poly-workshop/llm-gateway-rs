@@ -13,6 +13,7 @@ RUN cargo build --release && rm -rf src
 # Build real binary
 COPY src/ src/
 COPY migrations/ migrations/
+COPY migrations_sqlite/ migrations_sqlite/
 RUN touch src/main.rs && cargo build --release
 
 # ---- Runtime stage ----

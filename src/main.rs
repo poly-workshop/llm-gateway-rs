@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
         let redis_client = redis::Client::open(redis_url.as_str())?;
         let cm = redis_client.get_connection_manager().await?;
         tracing::info!("Connected to Redis");
-        Cache::Redis(cm)
+        Cache::Redis(Box::new(cm))
     } else {
         tracing::info!("Using in-memory cache (single-instance mode)");
         Cache::in_memory()

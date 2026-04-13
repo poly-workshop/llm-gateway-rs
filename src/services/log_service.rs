@@ -173,36 +173,39 @@ pub async fn list_logs(db: &DbPool, params: ListLogsParams) -> Result<LogListRes
            LIMIT $1 OFFSET $2"#
     );
 
-    // Execute count query
-    let total: i64 = {
-        let mut q = sqlx::query_scalar::<_, i64>(&count_query);
-        if let Some(ref kid) = params.key_id {
-            q = q.bind(kid);
-        }
-        if let Some(ref m) = params.model {
-            q = q.bind(m);
-        }
-        match db {
-            DbPool::Pg(p) => q.fetch_one(p).await?,
-            DbPool::Sqlite(p) => q.fetch_one(p).await?,
-        }
-    };
+    // Execute count and data queries — must build separate query objects per DB variant
+    // because sqlx locks the database type at bind time.
+    macro_rules! run_list_queries {
+        ($pool:expr) => {{
+            let total: i64 = {
+                let mut q = sqlx::query_scalar::<_, i64>(&count_query);
+                if let Some(ref kid) = params.key_id {
+                    q = q.bind(kid);
+                }
+                if let Some(ref m) = params.model {
+                    q = q.bind(m);
+                }
+                q.fetch_one($pool).await?
+            };
+            let rows: Vec<RequestLogRow> = {
+                let mut q = sqlx::query_as::<_, RequestLogRow>(&data_query)
+                    .bind(params.per_page)
+                    .bind(offset);
+                if let Some(ref kid) = params.key_id {
+                    q = q.bind(kid);
+                }
+                if let Some(ref m) = params.model {
+                    q = q.bind(m);
+                }
+                q.fetch_all($pool).await?
+            };
+            (total, rows)
+        }};
+    }
 
-    // Execute data query
-    let rows: Vec<RequestLogRow> = {
-        let mut q = sqlx::query_as::<_, RequestLogRow>(&data_query)
-            .bind(params.per_page)
-            .bind(offset);
-        if let Some(ref kid) = params.key_id {
-            q = q.bind(kid);
-        }
-        if let Some(ref m) = params.model {
-            q = q.bind(m);
-        }
-        match db {
-            DbPool::Pg(p) => q.fetch_all(p).await?,
-            DbPool::Sqlite(p) => q.fetch_all(p).await?,
-        }
+    let (total, rows) = match db {
+        DbPool::Pg(p) => run_list_queries!(p),
+        DbPool::Sqlite(p) => run_list_queries!(p),
     };
 
     Ok(LogListResponse {
